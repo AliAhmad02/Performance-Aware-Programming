@@ -4,7 +4,7 @@ use std::path::Path;
 const PERFORMANCE_AWARE_PATH: &str = "/home/ali/Rust_code/Performance_Aware_Programming";
 
 fn main() {
-    let path = Path::new(PERFORMANCE_AWARE_PATH).join("Listings/listing_49");
+    let path = Path::new(PERFORMANCE_AWARE_PATH).join("Listings/listing_52");
     let binary = fs::read(path).unwrap();
     let simulate = true;
     if simulate {

@@ -11,14 +11,18 @@ pub fn simulate(binary: Vec<u8>) {
     let mut registers: [u16; 8] = [0; 8];
     let mut flags: [bool; 2] = [false, false];
     let mut instruction_pointer = 0;
+    let mut memory: [u8; u16::MAX as usize] = [0; u16::MAX as usize];
 
     while instruction_pointer < total_bits {
         let instruction = decode_instruction(&binary, instruction_pointer);
         instruction_pointer += instruction.size;
         match instruction.mnemonic {
-            Mnemonic::MOV => {
-                simulate_move(instruction.src.unwrap(), instruction.dest, &mut registers)
-            }
+            Mnemonic::MOV => simulate_move(
+                instruction.src.unwrap(),
+                instruction.dest,
+                &mut registers,
+                &mut memory,
+            ),
             Mnemonic::ADD => {
                 simulate_add(
                     instruction.src.unwrap(),
@@ -50,11 +54,15 @@ pub fn simulate(binary: Vec<u8>) {
         }
     }
 
-    print_registers_and_flags(&registers, &flags);
-    println!("Instruction pointer: {instruction_pointer}");
+    print_simulation_info(&registers, &flags, instruction_pointer, &memory);
 }
 
-fn print_registers_and_flags(registers: &[u16; 8], flags: &[bool; 2]) {
+fn print_simulation_info(
+    registers: &[u16; 8],
+    flags: &[bool; 2],
+    i: usize,
+    memory: &[u8; u16::MAX as usize],
+) {
     let natural_order = [
         Register::AX as u8,
         Register::BX as u8,
@@ -70,6 +78,13 @@ fn print_registers_and_flags(registers: &[u16; 8], flags: &[bool; 2]) {
         println!("{}: {}", Register::from(idx), registers[(idx - 8) as usize],);
     }
     println!("ZF: {}, SF: {}", flags[0], flags[1]);
+    println!("Instruction pointer: {i}");
+
+    for (idx, value) in memory.iter().enumerate() {
+        if value != &0 {
+            println!("memory[{}] = {}", idx, value);
+        }
+    }
 }
 
 fn simulate_jne(destination: Operand, flags: &[bool; 2], i: &mut usize) {
@@ -132,10 +147,48 @@ fn simulate_add(
     }
 }
 
-fn simulate_move(source: Operand, destination: Operand, registers: &mut [u16; 8]) {
-    let value = get_value_from_operand(source, registers);
-    match destination {
-        Operand::Register(register) => write_value_to_register(value, register, registers),
+fn simulate_move(
+    source: Operand,
+    destination: Operand,
+    registers: &mut [u16; 8],
+    memory: &mut [u8; u16::MAX as usize],
+) {
+    let value_src = get_value_from_operand(source, registers);
+    let value_dest = get_value_from_operand(destination, registers);
+
+    match (destination, source) {
+        (Operand::Register(reg), Operand::Register(_))
+        | (Operand::Register(reg), Operand::Immediate(_)) => {
+            write_value_to_register(value_src, reg, registers)
+        }
+        (Operand::Register(reg), Operand::Memory(_, _, _)) => {
+            let mem_value = if (reg as u8) > 8 {
+                concatenate_bytes(memory[value_src as usize], memory[(value_src + 1) as usize])
+            } else {
+                memory[value_src as usize] as u16
+            };
+            write_value_to_register(mem_value, reg, registers);
+        }
+        (Operand::Memory(_, _, _), Operand::Register(reg)) => {
+            if (reg as u8) > 8 {
+                [
+                    memory[(value_dest + 1) as usize],
+                    memory[value_dest as usize],
+                ] = value_src.to_be_bytes();
+            } else {
+                memory[value_dest as usize] = value_src as u8;
+            }
+        }
+        // In this case, there is no way for me to know if the immediate
+        // value is 8 or 16 bits. In assembly language, there is a
+        // "word"/"byte" label to denote this. All the test cases just
+        // have "word" on them, so we can assume it's always 16 bits
+        (Operand::Memory(_, _, _), Operand::Immediate(_)) => {
+            [
+                memory[(value_dest + 1) as usize],
+                memory[value_dest as usize],
+            ] = value_src.to_be_bytes();
+        }
         _ => unreachable!(),
     }
 }
@@ -160,7 +213,7 @@ fn get_value_from_operand(operand: Operand, registers: &[u16; 8]) -> u16 {
     match operand {
         Operand::Immediate(value) => value,
         Operand::Register(register) => get_value_from_register(register, registers),
-        Operand::Memory(_, _, _) => unreachable!(),
+        Operand::Memory(reg1, reg2, dis) => compute_memory_address(reg1, reg2, dis, registers),
     }
 }
 
@@ -179,12 +232,25 @@ fn get_value_from_register(register: Register, registers: &[u16; 8]) -> u16 {
     }
 }
 
-// fn get_value_from_memory(register1: &Option<Register>, register2: &Option<Register>, displacement: &Option<u16>, registers: &[u16; 8]) -> u16 {
-//     let mut value = 0;
-//     if let Some(register) = register1 {
-//         value += get_value_from_register(register, registers)
-//     }
-// }
+fn compute_memory_address(
+    register1: Option<Register>,
+    register2: Option<Register>,
+    displacement: Option<u16>,
+    registers: &[u16; 8],
+) -> u16 {
+    let mut idx = 0;
+    if let Some(reg) = register1 {
+        idx += get_value_from_register(reg, registers);
+    }
+    if let Some(reg) = register2 {
+        idx += get_value_from_register(reg, registers);
+    }
+    if let Some(dis) = displacement {
+        idx += dis;
+    }
+
+    idx
+}
 
 pub fn decode_binary_and_print(binary: Vec<u8>) {
     let mut i = 0;
@@ -201,9 +267,11 @@ pub fn decode_binary_and_print(binary: Vec<u8>) {
 
 fn decode_instruction(binary: &[u8], i: usize) -> Instruction {
     let info = get_standard_bits_from_word(binary[i], binary[i + 1]);
-    if (binary[i] >> 4) == 0b1011 {
+    if (info.opcode >> 2) == 0b1011 {
         decode_immediate_to_register_mov(binary, i)
-    } else if (binary[i] >> 2) == 0b100010 {
+    } else if (info.opcode == 0b110001) && info.d {
+        decode_immediate_to_memory_mov(binary, i, &info)
+    } else if info.opcode == 0b100010 {
         decode_generic_mov(binary, i, &info)
     } else if GENERIC_ARITHMETIC_OPCODES.contains(&info.opcode) {
         decode_generic_arithmetic(binary, i, &info)
@@ -332,6 +400,31 @@ fn decode_rm_value_generic(binary: &[u8], i: usize, info: &InstructionInfo) -> (
     }
 }
 
+// It's immediate to register/memory even though I've just called it to memory.
+// Don't understand why it needs to also do immediate to register since we have
+// the one right below, but the manual has both
+fn decode_immediate_to_memory_mov(binary: &[u8], i: usize, info: &InstructionInfo) -> Instruction {
+    let (destination, increment) = decode_rm_value_generic(binary, i, info);
+
+    if info.w {
+        Instruction {
+            mnemonic: Mnemonic::MOV,
+            dest: destination,
+            src: Some(Operand::Immediate(concatenate_bytes(
+                binary[i + increment],
+                binary[i + increment + 1],
+            ))),
+            size: increment + 2,
+        }
+    } else {
+        Instruction {
+            mnemonic: Mnemonic::MOV,
+            dest: destination,
+            src: Some(Operand::Immediate(binary[i + increment] as u16)),
+            size: increment + 1,
+        }
+    }
+}
 fn decode_immediate_to_register_mov(binary: &[u8], i: usize) -> Instruction {
     let w = (0b00001000 & binary[i]) == 0b00001000;
     let register = Register::from((0b00000111 & binary[i]) + (w as u8) * 8);
