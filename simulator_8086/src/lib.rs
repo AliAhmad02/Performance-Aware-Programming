@@ -43,11 +43,15 @@ pub fn simulate(binary: Vec<u8>) {
                     &mut flags,
                 );
             }
+            Mnemonic::JNE => {
+                simulate_jne(instruction.dest, &flags, &mut instruction_pointer);
+            }
             _ => unreachable!(),
         }
     }
 
     print_registers_and_flags(&registers, &flags);
+    println!("Instruction pointer: {instruction_pointer}");
 }
 
 fn print_registers_and_flags(registers: &[u16; 8], flags: &[bool; 2]) {
@@ -63,9 +67,20 @@ fn print_registers_and_flags(registers: &[u16; 8], flags: &[bool; 2]) {
     ];
 
     for idx in natural_order {
-        println!("{}: {}", Register::from(idx), registers[(idx - 8) as usize]);
+        println!("{}: {}", Register::from(idx), registers[(idx - 8) as usize],);
     }
     println!("ZF: {}, SF: {}", flags[0], flags[1]);
+}
+
+fn simulate_jne(destination: Operand, flags: &[bool; 2], i: &mut usize) {
+    if !flags[0] {
+        match destination {
+            Operand::Immediate(value) => {
+                *i = ((*i as u8) + value as u8) as usize;
+            }
+            _ => unreachable!(),
+        }
+    }
 }
 
 fn simulate_cmp(
@@ -187,18 +202,18 @@ pub fn decode_binary_and_print(binary: Vec<u8>) {
 fn decode_instruction(binary: &[u8], i: usize) -> Instruction {
     let info = get_standard_bits_from_word(binary[i], binary[i + 1]);
     if (binary[i] >> 4) == 0b1011 {
-        decode_immediate_to_register_mov(&binary, i)
+        decode_immediate_to_register_mov(binary, i)
     } else if (binary[i] >> 2) == 0b100010 {
-        decode_generic_mov(&binary, i, &info)
+        decode_generic_mov(binary, i, &info)
     } else if GENERIC_ARITHMETIC_OPCODES.contains(&info.opcode) {
-        decode_generic_arithmetic(&binary, i, &info)
+        decode_generic_arithmetic(binary, i, &info)
     } else if info.opcode == 0b100000 {
-        decode_immediate_arithmetic(&binary, i, &info)
+        decode_immediate_arithmetic(binary, i, &info)
     } else if ACCUM_ARITHMETIC_OPCODES.contains(&info.opcode) && !info.d {
-        decode_accum_arithmetic(&binary, i, &info)
+        decode_accum_arithmetic(binary, i, &info)
     } else if CJUMPS_OPCODE_RANGE1.contains(&binary[i]) || CJUMPS_OPCODE_RANGE2.contains(&binary[i])
     {
-        decode_cjumps(&binary, i)
+        decode_cjumps(binary, i)
     } else {
         unreachable!()
     }
