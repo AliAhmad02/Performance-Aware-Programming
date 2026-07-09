@@ -258,10 +258,11 @@ pub fn decode_binary_and_print(binary: Vec<u8>) {
 
     while i < binary.len() {
         let instruction = decode_instruction(&binary, i);
+        let instruction_cycles = instruction.calculate_cycles();
 
         i += instruction.size;
 
-        println!("{}", instruction);
+        println!("{} -> {} cycles", instruction, instruction_cycles);
     }
 }
 
@@ -479,6 +480,48 @@ pub struct Instruction {
     size: usize,
 }
 
+impl Instruction {
+    fn calculate_cycles(&self) -> u16 {
+        let mut effective_address_cycles =
+            if let Some(src) = self.src {
+                src.calculate_effective_memory_address_cycles()
+            } else {
+                0
+            } + self.dest.calculate_effective_memory_address_cycles();
+
+        (match self.mnemonic {
+            Mnemonic::ADD => match (self.dest, self.src) {
+                (Operand::Register(_), Some(Operand::Register(_))) => 3,
+                (Operand::Register(_), Some(Operand::Memory(_, _, _))) => 9,
+                (Operand::Memory(_, _, _), Some(Operand::Register(_))) => 16,
+                (Operand::Register(_), Some(Operand::Immediate(_))) => 4,
+                (Operand::Memory(_, _, _), Some(Operand::Immediate(_))) => 17,
+                _ => unreachable!(),
+            },
+            Mnemonic::MOV => match (self.dest, self.src) {
+                (
+                    Operand::Memory(_, _, _),
+                    Some(Operand::Register(Register::AX | Register::AL | Register::AH)),
+                )
+                | (
+                    Operand::Register(Register::AX | Register::AL | Register::AH),
+                    Some(Operand::Memory(_, _, _)),
+                ) => {
+                    effective_address_cycles = 0;
+                    10
+                }
+                (Operand::Register(_), Some(Operand::Register(_))) => 2,
+                (Operand::Register(_), Some(Operand::Memory(_, _, _))) => 8,
+                (Operand::Memory(_, _, _), Some(Operand::Register(_))) => 9,
+                (Operand::Register(_), Some(Operand::Immediate(_))) => 4,
+                (Operand::Memory(_, _, _), Some(Operand::Immediate(_))) => 10,
+                _ => unreachable!(),
+            },
+            _ => unreachable!(),
+        } + effective_address_cycles)
+    }
+}
+
 impl Display for Instruction {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match &self.src {
@@ -604,6 +647,27 @@ impl Operand {
             _ => unreachable!(),
         };
         Self::Memory(register1, register2, displacement)
+    }
+
+    fn calculate_effective_memory_address_cycles(&self) -> u16 {
+        match self {
+            Self::Memory(None, None, Some(_)) => 6,
+            Self::Memory(Some(_), None, None | Some(0)) => 5,
+            Self::Memory(Some(_), None, Some(_)) => 9,
+            Self::Memory(Some(reg1), Some(reg2), disp) => {
+                let base_val = match (reg1, reg2) {
+                    (Register::BP, Register::DI) | (Register::BX, Register::SI) => 7,
+                    (Register::BP, Register::SI) | (Register::BX, Register::DI) => 8,
+                    _ => unreachable!(),
+                };
+                if disp.is_none() {
+                    base_val
+                } else {
+                    base_val + 4
+                }
+            }
+            _ => 0,
+        }
     }
 }
 
