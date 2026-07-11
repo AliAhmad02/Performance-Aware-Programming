@@ -27,6 +27,7 @@ pub fn generate_haversine_json(n: u32) {
     }
 
     writeln!(&mut writer, "\n]}}").unwrap();
+    writer.flush().unwrap()
 }
 
 fn generate_haversine_data(n: u32) -> impl Iterator<Item = (((f64, f64), f64), f64)> {
