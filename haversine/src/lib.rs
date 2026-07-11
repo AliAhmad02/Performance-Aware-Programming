@@ -5,7 +5,19 @@ use std::path::Path;
 
 const EARTH_RADIUS: f64 = 6372.8;
 
-pub fn generate_haversine_json(n: u32) {
+pub fn parse_json_and_calculate_haversine(filepath: &Path) -> Vec<f64> {
+    let string = fs::read_to_string(filepath).unwrap();
+    let values: Vec<f64> = string
+        .split([':', ',', '}'])
+        .filter_map(|s| s.parse().ok())
+        .collect();
+    values
+        .chunks_exact(4)
+        .map(|x| haversine(x[0], x[1], x[2], x[3]))
+        .collect()
+}
+
+pub fn generate_haversine_json(n: u32, filepath: &Path) {
     // We assume that each line is around 110 bytes
     let mut writer = String::with_capacity(n as usize * 110);
     let iter = generate_haversine_data(n);
@@ -28,7 +40,6 @@ pub fn generate_haversine_json(n: u32) {
 
     writeln!(&mut writer, "\n]}}").unwrap();
 
-    let filepath = Path::new("data/haversine.json");
     fs::write(filepath, writer).unwrap();
 }
 

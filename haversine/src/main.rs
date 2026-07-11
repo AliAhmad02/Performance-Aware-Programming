@@ -1,3 +1,10 @@
+use std::path::Path;
+
 fn main() {
-    haversine::generate_haversine_json(1_000_000);
+    let filepath = Path::new("data/haversine.json");
+    let result = haversine::parse_json_and_calculate_haversine(filepath);
+    println!(
+        "{}",
+        result.iter().sum::<f64>() / (result.len() as f64).sqrt()
+    );
 }
