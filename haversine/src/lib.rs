@@ -1,14 +1,14 @@
 use rand::RngExt;
-use std::fs::File;
-use std::io::{BufWriter, Write};
+use std::fmt::Write;
+use std::fs;
 use std::path::Path;
 
 const EARTH_RADIUS: f64 = 6372.8;
 
 pub fn generate_haversine_json(n: u32) {
-    let file = File::create(Path::new("data/haversine.json")).unwrap();
-    let mut writer = BufWriter::new(file);
-    let iter = generate_haversine_data(n).peekable();
+    // We assume that each line is around 110 bytes
+    let mut writer = String::with_capacity(n as usize * 110);
+    let iter = generate_haversine_data(n);
     let mut first = true;
 
     writeln!(&mut writer, "{{\"pairs\":[").unwrap();
@@ -27,7 +27,9 @@ pub fn generate_haversine_json(n: u32) {
     }
 
     writeln!(&mut writer, "\n]}}").unwrap();
-    writer.flush().unwrap()
+
+    let filepath = Path::new("data/haversine.json");
+    fs::write(filepath, writer).unwrap();
 }
 
 fn generate_haversine_data(n: u32) -> impl Iterator<Item = (((f64, f64), f64), f64)> {
