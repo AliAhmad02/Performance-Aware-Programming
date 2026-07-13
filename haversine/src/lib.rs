@@ -1,9 +1,103 @@
 use rand::RngExt;
+use std::arch::x86_64::_rdtsc;
 use std::fmt::Write;
 use std::fs;
 use std::path::Path;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 const EARTH_RADIUS: f64 = 6372.8;
+const OS_TIMER_FREQ: u64 = 1_000_000;
+
+pub fn parse_and_sum_profiled(filepath: &Path) {
+    let cpu_begin = read_cpu_timer();
+    let string = fs::read_to_string(filepath).unwrap();
+    let cpu_allocated = read_cpu_timer();
+    let values: Vec<f64> = string
+        .split([':', ',', '}'])
+        .filter_map(|s| s.parse().ok())
+        .collect();
+    let n_pairs = (values.len() / 4) as f64;
+    let cpu_parsed = read_cpu_timer();
+    let sum: f64 = values
+        .chunks_exact(4)
+        .map(|x| haversine(x[0], x[1], x[2], x[3]))
+        .sum::<f64>()
+        / n_pairs.sqrt();
+    let cpu_calculate_and_sum = read_cpu_timer();
+
+    println!("Number of pairs: {n_pairs:.0}");
+    println!("Sum(haversine)/sqrt(N): {sum:.16}");
+
+    let cpu_results_printed = read_cpu_timer();
+    let cpu_freq = estimate_cpu_timer_freq();
+    let cpu_time_total = (cpu_results_printed - cpu_begin) as f64;
+
+    println!(
+        "Total time: {:.4} ms (CPU freq: {})",
+        1000.0 * cpu_time_total / (cpu_freq as f64),
+        cpu_freq
+    );
+
+    println!(
+        "  Allocate JSON string: {}, ({:.2}%)",
+        cpu_allocated - cpu_begin,
+        ((cpu_allocated - cpu_begin) as f64) / cpu_time_total * 100.0
+    );
+
+    println!(
+        "  Parse JSON: {}, ({:.2}%)",
+        cpu_parsed - cpu_allocated,
+        ((cpu_parsed - cpu_allocated) as f64) / cpu_time_total * 100.0
+    );
+
+    println!(
+        "  Calculate sum: {}, ({:.2}%)",
+        cpu_calculate_and_sum - cpu_parsed,
+        ((cpu_calculate_and_sum - cpu_parsed) as f64) / cpu_time_total * 100.0
+    );
+
+    println!(
+        "  Print results: {}, ({:.2}%)",
+        cpu_results_printed - cpu_calculate_and_sum,
+        ((cpu_results_printed - cpu_calculate_and_sum) as f64) / cpu_time_total * 100.0
+    );
+}
+fn estimate_cpu_timer_freq() -> u64 {
+    let miliseconds_to_wait = 100;
+    let cpu_time_start = read_cpu_timer();
+    let os_time_start = read_os_timer();
+    let mut os_time_end;
+    let mut os_time_elapsed = 0;
+    // We need to wait for 100 ms which is 100_000 microseconds
+    let os_wait_time = OS_TIMER_FREQ * miliseconds_to_wait / 1000;
+
+    while os_time_elapsed < os_wait_time {
+        os_time_end = read_os_timer();
+        os_time_elapsed = os_time_end - os_time_start;
+    }
+
+    let cpu_time_end = read_cpu_timer();
+    let cpu_time_elapsed = cpu_time_end - cpu_time_start;
+
+    if os_time_elapsed > 0 {
+        // Number of CPU ticks per second (the division gives per microsecond
+        // and the factor million converts back to seconds)
+        OS_TIMER_FREQ * cpu_time_elapsed / os_time_elapsed
+    } else {
+        0
+    }
+}
+
+// Read time in microseconds
+fn read_os_timer() -> u64 {
+    let duration = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
+    duration.as_secs() * OS_TIMER_FREQ + duration.subsec_micros() as u64
+}
+
+// Read time in CPU units (number of elapsed "cpu ticks")
+fn read_cpu_timer() -> u64 {
+    unsafe { _rdtsc() }
+}
 
 pub fn parse_json_and_calculate_haversine(filepath: &Path) -> Vec<f64> {
     let string = fs::read_to_string(filepath).unwrap();
