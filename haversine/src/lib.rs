@@ -3,12 +3,17 @@ use std::arch::x86_64::_rdtsc;
 use std::fmt::Write;
 use std::fs;
 use std::path::Path;
-use std::sync::Mutex;
+use std::sync::{LazyLock, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 const EARTH_RADIUS: f64 = 6372.8;
 const OS_TIMER_FREQ: u64 = 1_000_000;
-static PROFILE_RESULTS: Mutex<Vec<ProfileResult>> = Mutex::new(Vec::new());
+// Mutex allows us to mutate the immutable static value.
+// Lazylock allows us to pre-allocate the memory for the
+// vector at runtime (typically for a static everything
+// has to happen at compile time)
+static PROFILE_RESULTS: LazyLock<Mutex<Vec<ProfileResult>>> =
+    LazyLock::new(|| Mutex::new(Vec::with_capacity(100)));
 
 #[macro_export]
 macro_rules! time {
