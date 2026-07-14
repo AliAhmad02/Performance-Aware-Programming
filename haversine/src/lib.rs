@@ -3,10 +3,72 @@ use std::arch::x86_64::_rdtsc;
 use std::fmt::Write;
 use std::fs;
 use std::path::Path;
+use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 const EARTH_RADIUS: f64 = 6372.8;
 const OS_TIMER_FREQ: u64 = 1_000_000;
+static PROFILE_RESULTS: Mutex<Vec<ProfileResult>> = Mutex::new(Vec::new());
+
+#[macro_export]
+macro_rules! time {
+    ($label:literal, $($tt:tt)+) => {
+        {
+            let time_start = read_cpu_timer();
+            let return_value = {$( $tt )+};
+            let time_end = read_cpu_timer();
+            PROFILE_RESULTS.lock().unwrap().push(ProfileResult {time_start, time_end, label: $label});
+            return_value
+        }
+    };
+}
+
+pub fn parse_and_sum_profiled_auto(filepath: &Path) {
+    let string = time!(
+        "Allocate JSON string",
+        fs::read_to_string(filepath).unwrap()
+    );
+    let values: Vec<f64> = time! {
+        "Parse JSON",
+        string
+            .split([':', ',', '}'])
+            .filter_map(|s| s.parse().ok())
+            .collect()
+    };
+    let n_pairs = (values.len() / 4) as f64;
+    let sum: f64 = time! {
+        "Calculate sum",
+        values
+            .chunks_exact(4)
+            .map(|x| haversine(x[0], x[1], x[2], x[3]))
+            .sum::<f64>()
+            / n_pairs.sqrt()
+    };
+
+    time! {
+        "Print results",
+        println!("Number of pairs: {n_pairs:.0}");
+        println!("Sum(haversine)/sqrt(N): {sum:.16}");
+    };
+    print_profile_results(PROFILE_RESULTS.lock().unwrap().get(..).unwrap());
+}
+
+fn print_profile_results(results: &[ProfileResult]) {
+    let cpu_time_total = (results[results.len() - 1].time_end - results[0].time_start) as f64;
+    let cpu_freq = estimate_cpu_timer_freq();
+    let real_time_total_ms = 1000.0 * cpu_time_total / (cpu_freq as f64);
+
+    println!(
+        "Total time {:.4} ms (CPU freq: {})",
+        real_time_total_ms, cpu_freq
+    );
+
+    for result in results {
+        let cpu_time = result.timediff();
+        let cpu_time_pct = (cpu_time as f64) / cpu_time_total * 100.0;
+        println!("  {}: {}, ({:.2}%)", result.label, cpu_time, cpu_time_pct);
+    }
+}
 
 pub fn parse_and_sum_profiled(filepath: &Path) {
     let cpu_begin = read_cpu_timer();
@@ -211,4 +273,16 @@ fn sample_values_in_range(low: f64, high: f64, n: u32) -> Vec<f64> {
     }
 
     values
+}
+
+struct ProfileResult {
+    time_start: u64,
+    time_end: u64,
+    label: &'static str,
+}
+
+impl ProfileResult {
+    fn timediff(&self) -> u64 {
+        self.time_end - self.time_start
+    }
 }
