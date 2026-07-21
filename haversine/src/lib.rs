@@ -1,7 +1,8 @@
 use rand::RngExt;
-use std::arch::x86_64::_rdtsc;
-use std::fmt::Write;
+use std::arch::{asm, x86_64::_rdtsc};
+use std::fmt::Write as Write1;
 use std::fs;
+use std::io::{self, Read, Write};
 use std::path::Path;
 use std::sync::{LazyLock, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -16,6 +17,18 @@ static PROFILE_RESULTS: LazyLock<Mutex<Vec<ProfileResult>>> =
     LazyLock::new(|| Mutex::new(Vec::with_capacity(100)));
 
 #[macro_export]
+macro_rules! time_simple {
+    ($($tt:tt)+) => {
+        {
+            let time_start = read_cpu_timer();
+            {$( $tt )+};
+            let time_end = read_cpu_timer();
+            time_end - time_start
+        }
+    };
+}
+
+#[macro_export]
 macro_rules! time {
     ($label:literal, $($tt:tt)+) => {
         {
@@ -26,6 +39,99 @@ macro_rules! time {
             return_value
         }
     };
+}
+
+/*
+The page fault numbers were not making sense (I was not getting
+4.096kB per page fault. Turns out this is because of an optimization
+in Linux called Transparent Hugepages that allows to allocate
+2 MiB chunks instead of just 4kiB. If I disable this, the results
+make perfect sense; I get 4.096kB/fault if I allocate inside the
+loop and 0 faults if I allocate outside the loop
+*/
+pub fn repetition_test_read(filepath: &Path, test_time: u64) {
+    let mut elapsed_total = 0;
+    let mut cpu_time_minimum = u64::MAX;
+    let mut cpu_time_maximum = 0;
+    let mut page_faults_maximum = 0;
+    let mut count: u64 = 0;
+    let mut cpu_time_average: f64 = 0.0;
+    let mut page_faults_average: f64 = 0.0;
+    let mut buffer = fs::read(filepath).unwrap();
+    let num_bytes = buffer.len() as f64;
+//    let num_bytes = 108429019_f64;
+    let mut perf_event = PerfEvent::new();
+
+    let cpu_freq = estimate_cpu_timer_freq() as f64;
+    let cpu_to_ms_conversion = 1000.0 / (cpu_freq);
+    let cpu_to_s_conversion = 1.0 / cpu_freq;
+    let byte_to_gb_conversion = 1.0 / (1024.0 * 1024.0 * 1024.0);
+
+    while elapsed_total < test_time {
+        let start_os_time = read_os_timer();
+        let mut file = fs::File::open(filepath).unwrap();
+ //       let mut buffer = vec![0; num_bytes as usize];
+
+        perf_event.start_measurement();
+        let elapsed_cpu_time = time_simple!(file.read_exact(&mut buffer).unwrap());
+        perf_event.stop_measurement();
+        let elapsed_os_time = read_os_timer() - start_os_time;
+        let page_faults = perf_event.events;
+
+        if elapsed_cpu_time > cpu_time_maximum {
+            cpu_time_maximum = elapsed_cpu_time;
+            page_faults_maximum = page_faults;
+        }
+
+        if elapsed_cpu_time < cpu_time_minimum {
+            elapsed_total = 0;
+            cpu_time_minimum = elapsed_cpu_time;
+            let ms_minimum = cpu_time_minimum as f64 * cpu_to_ms_conversion;
+            let thr_minimum = (num_bytes * byte_to_gb_conversion)
+                / (cpu_time_minimum as f64 * cpu_to_s_conversion);
+            print!(
+                "\rMinimum: {} ({:.3} ms) {:.3} gb/s PF: {} ({:.3} kb/fault)",
+                cpu_time_minimum,
+                ms_minimum,
+                thr_minimum,
+                page_faults,
+                num_bytes / (page_faults as f64 * 1000.0),
+            );
+            io::stdout().flush().unwrap();
+        } else {
+            elapsed_total += elapsed_os_time;
+        }
+
+        count += 1;
+        cpu_time_average += elapsed_cpu_time as f64;
+        page_faults_average += page_faults as f64;
+    }
+
+    cpu_time_average /= count as f64;
+    page_faults_average /= count as f64;
+
+    let ms_maximum = cpu_time_maximum as f64 * cpu_to_ms_conversion;
+    let thr_maximum =
+        (num_bytes * byte_to_gb_conversion) / (cpu_time_maximum as f64 * cpu_to_s_conversion);
+    let ms_average = cpu_time_average * cpu_to_ms_conversion;
+    let thr_average =
+        (num_bytes * byte_to_gb_conversion) / (cpu_time_average * cpu_to_s_conversion);
+    println!(
+        "\nMaximum: {} ({:.3} ms) {:.3} gb/s PF: {} ({:.3} kb/fault)",
+        cpu_time_maximum,
+        ms_maximum,
+        thr_maximum,
+        page_faults_maximum,
+        num_bytes / (page_faults_maximum as f64 * 1000.0)
+    );
+    println!(
+        "Average: {} ({:.3} ms) {:.3} gb/s PF: {} ({:.3} kb/fault)",
+        cpu_time_average,
+        ms_average,
+        thr_average,
+        page_faults_average,
+        num_bytes / (1000.0 * page_faults_average),
+    );
 }
 
 pub fn parse_and_sum_profiled_auto(filepath: &Path) {
@@ -278,6 +384,160 @@ fn sample_values_in_range(low: f64, high: f64, n: u32) -> Vec<f64> {
     }
 
     values
+}
+
+fn close(fd: i32) {
+    const SYSCALL_CLOSE: usize = 3;
+    let return_code: i32;
+
+    unsafe {
+        asm!(
+            "syscall",
+            in("rax") SYSCALL_CLOSE,
+            in("rdi") fd,
+            // syscall clobbers rcx and r11
+            out("rcx") _,
+            out("r11") _,
+            lateout("rax") return_code,
+        )
+    }
+
+    assert!(return_code >= 0);
+}
+
+fn read(fd: i32, pointer: &mut u64, size: usize) {
+    const SYSCALL_READ: usize = 0;
+    let return_code: i32;
+
+    unsafe {
+        asm!(
+            "syscall",
+            in("rax") SYSCALL_READ,
+            in("rdi") fd,
+            in("rsi") pointer,
+            in("rdx") size,
+            // syscall clobbers rcx and r11
+            out("rcx") _,
+            out("r11") _,
+            lateout("rax") return_code,
+        )
+    }
+
+    assert!(return_code >= 0);
+}
+
+fn ioctl(fd: i32, code: usize, pointer: usize) {
+    const SYSCALL_IOCTL: usize = 16;
+    let return_code: i32;
+
+    unsafe {
+        asm!(
+            "syscall",
+            in("rax") SYSCALL_IOCTL,
+            in("rdi") fd,
+            in("rsi") code,
+            in("rdx") pointer,
+            // syscall clobbers rcx and r11
+            out("rcx") _,
+            out("r11") _,
+            lateout("rax") return_code,
+        )
+    }
+
+    assert!(return_code >= 0);
+}
+
+struct PerfEvent {
+    events: u64,
+    file_descriptor: i32,
+}
+
+impl Drop for PerfEvent {
+    fn drop(&mut self) {
+        close(self.file_descriptor);
+    }
+}
+
+impl PerfEvent {
+    fn new() -> Self {
+        let perf_event = PerfEventAttr {
+            r#type: 1,
+            size: size_of::<PerfEventAttr>() as u32,
+            config: 2,
+            // 1 is equivalent to disabled=1
+            bit_flags: 1,
+            ..Default::default()
+        };
+
+        const SYSCALL_PERF_EVENT_OPEN: usize = 298;
+
+        let file_descriptor: i32;
+        unsafe {
+            asm!(
+                "syscall",
+                in("rax") SYSCALL_PERF_EVENT_OPEN,
+                in("rdi") &perf_event,
+                in("rsi") 0,
+                in("rdx") -1,
+                in("r10") -1,
+                in("r8") 0,
+                // syscall clobbers rcx and r11
+                out("rcx") _,
+                out("r11") _,
+                // Return pointer to filehandle
+                lateout("rax") file_descriptor,
+            )
+        }
+
+        assert!(file_descriptor >= 0);
+
+        Self {
+            events: 0,
+            file_descriptor,
+        }
+    }
+
+    fn start_measurement(&self) {
+        const IOCTL_RESET: usize = 9219;
+        const IOCTL_ENABLE: usize = 9216;
+        ioctl(self.file_descriptor, IOCTL_RESET, 0);
+        ioctl(self.file_descriptor, IOCTL_ENABLE, 0);
+    }
+
+    fn stop_measurement(&mut self) {
+        const IOCTL_DISABLE: usize = 9217;
+        ioctl(self.file_descriptor, IOCTL_DISABLE, 0);
+        read(self.file_descriptor, &mut self.events, size_of::<u64>());
+    }
+}
+
+#[derive(Default)]
+#[repr(C)]
+struct PerfEventAttr {
+    r#type: u32,
+    size: u32,
+    config: u64,
+    sample_period: u64,
+    sample_type: u64,
+    read_format: u64,
+    bit_flags: u64,
+    wakeup_events: u32,
+    bp_type: u32,
+    bp_addr: u64,
+    bp_len: u64,
+    branch_sample_type: u64,
+    sample_regs_user: u64,
+    sample_stack_user: u32,
+    clockid: i32,
+    sample_regs_intr: u64,
+    aux_watermark: u32,
+    sample_max_stack: u16,
+    __reserved_2: u16,
+    aux_sample_size: u32,
+    aux_action: u32,
+    sig_data: u64,
+    config3: u64,
+    config4: u64,
 }
 
 struct ProfileResult {
