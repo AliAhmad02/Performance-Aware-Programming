@@ -1,6 +1,7 @@
+use core::f64;
 use rand::RngExt;
 use std::arch::{asm, x86_64::_rdtsc};
-use std::fmt::Write as Write1;
+use std::fmt::{Display, Write as Write1};
 use std::fs;
 use std::io::{self, Read, Write};
 use std::path::Path;
@@ -43,95 +44,46 @@ macro_rules! time {
 
 /*
 The page fault numbers were not making sense (I was not getting
-4.096kB per page fault. Turns out this is because of an optimization
+4kB per page fault. Turns out this is because of an optimization
 in Linux called Transparent Hugepages that allows to allocate
-2 MiB chunks instead of just 4kiB. If I disable this, the results
-make perfect sense; I get 4.096kB/fault if I allocate inside the
+2 MB chunks instead of just 4kB. If I disable this, the results
+make perfect sense; I get 4kB/fault if I allocate inside the
 loop and 0 faults if I allocate outside the loop
 */
 pub fn repetition_test_read(filepath: &Path, test_time: u64) {
-    let mut elapsed_total = 0;
-    let mut cpu_time_minimum = u64::MAX;
-    let mut cpu_time_maximum = 0;
-    let mut page_faults_maximum = 0;
-    let mut count: u64 = 0;
-    let mut cpu_time_average: f64 = 0.0;
-    let mut page_faults_average: f64 = 0.0;
     let mut buffer = fs::read(filepath).unwrap();
-    let num_bytes = buffer.len() as f64;
-//    let num_bytes = 108429019_f64;
-    let mut perf_event = PerfEvent::new();
+    let num_bytes = buffer.len();
+    //     let num_bytes = 108429019;
+    let mut tester = RepetitionTest::build(
+        vec![
+            Measurement::CpuTime(CpuTime::new()),
+            Measurement::PageFaults(PageFaults::new()),
+        ],
+        num_bytes,
+    );
 
-    let cpu_freq = estimate_cpu_timer_freq() as f64;
-    let cpu_to_ms_conversion = 1000.0 / (cpu_freq);
-    let cpu_to_s_conversion = 1.0 / cpu_freq;
-    let byte_to_gb_conversion = 1.0 / (1024.0 * 1024.0 * 1024.0);
+    let mut elapsed_total = 0;
 
     while elapsed_total < test_time {
         let start_os_time = read_os_timer();
         let mut file = fs::File::open(filepath).unwrap();
- //       let mut buffer = vec![0; num_bytes as usize];
 
-        perf_event.start_measurement();
-        let elapsed_cpu_time = time_simple!(file.read_exact(&mut buffer).unwrap());
-        perf_event.stop_measurement();
+        //        let mut buffer = vec![0; tester.bytes];
+        tester.start_measurements();
+        file.read_exact(&mut buffer).unwrap();
+        let reset_timer = tester.stop_measurements();
         let elapsed_os_time = read_os_timer() - start_os_time;
-        let page_faults = perf_event.events;
-
-        if elapsed_cpu_time > cpu_time_maximum {
-            cpu_time_maximum = elapsed_cpu_time;
-            page_faults_maximum = page_faults;
-        }
-
-        if elapsed_cpu_time < cpu_time_minimum {
+        if reset_timer {
             elapsed_total = 0;
-            cpu_time_minimum = elapsed_cpu_time;
-            let ms_minimum = cpu_time_minimum as f64 * cpu_to_ms_conversion;
-            let thr_minimum = (num_bytes * byte_to_gb_conversion)
-                / (cpu_time_minimum as f64 * cpu_to_s_conversion);
-            print!(
-                "\rMinimum: {} ({:.3} ms) {:.3} gb/s PF: {} ({:.3} kb/fault)",
-                cpu_time_minimum,
-                ms_minimum,
-                thr_minimum,
-                page_faults,
-                num_bytes / (page_faults as f64 * 1000.0),
-            );
-            io::stdout().flush().unwrap();
         } else {
             elapsed_total += elapsed_os_time;
         }
+        tester.count += 1;
 
-        count += 1;
-        cpu_time_average += elapsed_cpu_time as f64;
-        page_faults_average += page_faults as f64;
+        print!("\x1B[2J\x1B[H");
+        print!("{}", tester);
+        io::stdout().flush().unwrap();
     }
-
-    cpu_time_average /= count as f64;
-    page_faults_average /= count as f64;
-
-    let ms_maximum = cpu_time_maximum as f64 * cpu_to_ms_conversion;
-    let thr_maximum =
-        (num_bytes * byte_to_gb_conversion) / (cpu_time_maximum as f64 * cpu_to_s_conversion);
-    let ms_average = cpu_time_average * cpu_to_ms_conversion;
-    let thr_average =
-        (num_bytes * byte_to_gb_conversion) / (cpu_time_average * cpu_to_s_conversion);
-    println!(
-        "\nMaximum: {} ({:.3} ms) {:.3} gb/s PF: {} ({:.3} kb/fault)",
-        cpu_time_maximum,
-        ms_maximum,
-        thr_maximum,
-        page_faults_maximum,
-        num_bytes / (page_faults_maximum as f64 * 1000.0)
-    );
-    println!(
-        "Average: {} ({:.3} ms) {:.3} gb/s PF: {} ({:.3} kb/fault)",
-        cpu_time_average,
-        ms_average,
-        thr_average,
-        page_faults_average,
-        num_bytes / (1000.0 * page_faults_average),
-    );
 }
 
 pub fn parse_and_sum_profiled_auto(filepath: &Path) {
@@ -447,18 +399,183 @@ fn ioctl(fd: i32, code: usize, pointer: usize) {
     assert!(return_code >= 0);
 }
 
-struct PerfEvent {
-    events: u64,
+struct RepetitionTest {
+    measurements: Vec<Measurement>,
+    results: Vec<RepetitionResult>,
+    count: u64,
+    bytes: usize,
+}
+
+impl Display for RepetitionTest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let cpu_freq = estimate_cpu_timer_freq() as f64;
+        let cpu_to_ms = 1000.0 / (cpu_freq);
+        let cpu_to_s = 1.0 / cpu_freq;
+        let byte_to_gb = 1.0 / (1024.0 * 1024.0 * 1024.0);
+        let mut min_string = "Min: ".to_string();
+        let mut max_string = "Max: ".to_string();
+        let mut avg_string = "Avg: ".to_string();
+
+        for (result, measurement) in self.results.iter().zip(&self.measurements) {
+            let average = self.average(result);
+            match measurement {
+                Measurement::CpuTime(_) => {
+                    min_string.push_str(&format!(
+                        "{} ({:.3} ms) {:.3} gb/s ",
+                        result.min,
+                        result.min as f64 * cpu_to_ms,
+                        (self.bytes as f64 * byte_to_gb) / (result.min as f64 * cpu_to_s),
+                    ));
+                    max_string.push_str(&format!(
+                        "{} ({:.3} ms) {:.3} gb/s ",
+                        result.max,
+                        result.max as f64 * cpu_to_ms,
+                        (self.bytes as f64 * byte_to_gb) / (result.max as f64 * cpu_to_s),
+                    ));
+                    avg_string.push_str(&format!(
+                        "{:.3} ({:.3} ms) {:.3} gb/s ",
+                        result.total as f64 / self.count as f64,
+                        average * cpu_to_ms,
+                        (self.bytes as f64 * byte_to_gb) / (average * cpu_to_s),
+                    ));
+                }
+                Measurement::PageFaults(_) => {
+                    min_string.push_str(&format!(
+                        "PF: {} ({:.3}kb/fault) ",
+                        result.min,
+                        self.bytes as f64 / (result.min as f64 * 1024.0),
+                    ));
+                    max_string.push_str(&format!(
+                        "PF: {} ({:.3}kb/fault) ",
+                        result.max,
+                        self.bytes as f64 / (result.max as f64 * 1024.0),
+                    ));
+                    avg_string.push_str(&format!(
+                        "PF: {:.3} ({:.3}kb/fault) ",
+                        result.total as f64 / self.count as f64,
+                        self.bytes as f64 / (average * 1024.0),
+                    ));
+                }
+            }
+        }
+
+        write!(f, "{}\n{}\n{}", min_string, max_string, avg_string)
+    }
+}
+
+impl RepetitionTest {
+    fn build(measurements: Vec<Measurement>, bytes: usize) -> Self {
+        Self {
+            results: vec![
+                RepetitionResult {
+                    min: u64::MAX,
+                    max: 0,
+                    total: 0
+                };
+                measurements.len()
+            ],
+            measurements,
+            count: 0,
+            bytes,
+        }
+    }
+
+    fn start_measurements(&mut self) {
+        self.measurements
+            .iter_mut()
+            .for_each(|m| m.start_measurement());
+    }
+
+    fn stop_measurements(&mut self) -> bool {
+        let mut reset_timer = false;
+        for (result, measurement) in self.results.iter_mut().zip(&mut self.measurements) {
+            measurement.stop_measurement();
+            let result_value = measurement.get_result();
+
+            if result_value < result.min {
+                result.min = result_value;
+                if let Measurement::CpuTime(_) = measurement {
+                    reset_timer = true;
+                }
+            } else if result_value > result.max {
+                result.max = result_value;
+            }
+            result.total += result_value;
+        }
+        reset_timer
+    }
+
+    fn average(&self, result: &RepetitionResult) -> f64 {
+        result.total as f64 / self.count as f64
+    }
+}
+
+#[derive(Clone)]
+struct RepetitionResult {
+    min: u64,
+    max: u64,
+    total: u64,
+}
+
+enum Measurement {
+    CpuTime(CpuTime),
+    PageFaults(PageFaults),
+}
+
+impl Measurement {
+    fn start_measurement(&mut self) {
+        match self {
+            Self::CpuTime(m) => m.start_measurement(),
+            Self::PageFaults(m) => m.start_measurement(),
+        }
+    }
+
+    fn stop_measurement(&mut self) {
+        match self {
+            Self::CpuTime(m) => m.stop_measurement(),
+            Self::PageFaults(m) => m.stop_measurement(),
+        }
+    }
+
+    fn get_result(&self) -> u64 {
+        match self {
+            Self::CpuTime(m) => m.end - m.start,
+            Self::PageFaults(m) => m.faults,
+        }
+    }
+}
+
+struct CpuTime {
+    start: u64,
+    end: u64,
+}
+
+impl CpuTime {
+    fn new() -> Self {
+        CpuTime { start: 0, end: 0 }
+    }
+
+    fn start_measurement(&mut self) {
+        self.start = read_cpu_timer();
+    }
+
+    fn stop_measurement(&mut self) {
+        self.end = read_cpu_timer();
+    }
+}
+
+struct PageFaults {
+    faults: u64,
     file_descriptor: i32,
 }
 
-impl Drop for PerfEvent {
+impl Drop for PageFaults {
     fn drop(&mut self) {
         close(self.file_descriptor);
     }
 }
 
-impl PerfEvent {
+impl PageFaults {
     fn new() -> Self {
         let perf_event = PerfEventAttr {
             r#type: 1,
@@ -492,12 +609,12 @@ impl PerfEvent {
         assert!(file_descriptor >= 0);
 
         Self {
-            events: 0,
+            faults: 0,
             file_descriptor,
         }
     }
 
-    fn start_measurement(&self) {
+    fn start_measurement(&mut self) {
         const IOCTL_RESET: usize = 9219;
         const IOCTL_ENABLE: usize = 9216;
         ioctl(self.file_descriptor, IOCTL_RESET, 0);
@@ -507,7 +624,7 @@ impl PerfEvent {
     fn stop_measurement(&mut self) {
         const IOCTL_DISABLE: usize = 9217;
         ioctl(self.file_descriptor, IOCTL_DISABLE, 0);
-        read(self.file_descriptor, &mut self.events, size_of::<u64>());
+        read(self.file_descriptor, &mut self.faults, size_of::<u64>());
     }
 }
 
