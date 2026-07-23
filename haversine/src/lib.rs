@@ -1,12 +1,12 @@
 use core::f64;
 use rand::RngExt;
 use std::arch::{asm, x86_64::_rdtsc};
-use std::fmt::{Display, Write as Write1};
-use std::fs;
+use std::fmt::Write as Write1;
 use std::io::{self, Read, Write};
 use std::path::Path;
 use std::sync::{LazyLock, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
+use std::{fs, vec};
 
 const EARTH_RADIUS: f64 = 6372.8;
 const OS_TIMER_FREQ: u64 = 1_000_000;
@@ -42,6 +42,39 @@ macro_rules! time {
     };
 }
 
+pub fn repetition_test_write_bytes(test_time: u64) {
+    let num_bytes = 1024 * 1024;
+    let mut tester = RepetitionTest::build(
+        vec![
+            Measurement::CpuTime(CpuTime::new()),
+            Measurement::PageFaults(PageFaults::new()),
+        ],
+        num_bytes,
+    );
+
+    let mut elapsed_total = 0;
+
+    while elapsed_total < test_time {
+        let mut buffer = Vec::with_capacity(num_bytes);
+        let start_os_time = read_os_timer();
+        tester.start_measurements();
+        for idx in 0..num_bytes {
+            buffer.push(idx as u8);
+        }
+        let reset_timer = tester.stop_measurements();
+        let elapsed_os_time = read_os_timer() - start_os_time;
+        if reset_timer {
+            elapsed_total = 0;
+            tester.print_minimum();
+        } else {
+            elapsed_total += elapsed_os_time;
+        }
+    }
+
+    tester.print_maximum();
+    tester.print_average();
+}
+
 /*
 The page fault numbers were not making sense (I was not getting
 4kB per page fault. Turns out this is because of an optimization
@@ -75,15 +108,14 @@ pub fn repetition_test_read(filepath: &Path, test_time: u64) {
         let elapsed_os_time = read_os_timer() - start_os_time;
         if reset_timer {
             elapsed_total = 0;
+            tester.print_minimum();
         } else {
             elapsed_total += elapsed_os_time;
         }
-        tester.count += 1;
-
-        print!("\x1B[2J\x1B[H");
-        print!("{}", tester);
-        io::stdout().flush().unwrap();
     }
+
+    tester.print_maximum();
+    tester.print_average();
 }
 
 pub fn parse_and_sum_profiled_auto(filepath: &Path) {
@@ -404,63 +436,7 @@ struct RepetitionTest {
     results: Vec<RepetitionResult>,
     count: u64,
     bytes: usize,
-}
-
-impl Display for RepetitionTest {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let cpu_freq = estimate_cpu_timer_freq() as f64;
-        let cpu_to_ms = 1000.0 / (cpu_freq);
-        let cpu_to_s = 1.0 / cpu_freq;
-        let byte_to_gb = 1.0 / (1024.0 * 1024.0 * 1024.0);
-        let mut min_string = "Min: ".to_string();
-        let mut max_string = "Max: ".to_string();
-        let mut avg_string = "Avg: ".to_string();
-
-        for (result, measurement) in self.results.iter().zip(&self.measurements) {
-            let average = self.average(result);
-            match measurement {
-                Measurement::CpuTime(_) => {
-                    min_string.push_str(&format!(
-                        "{} ({:.3} ms) {:.3} gb/s ",
-                        result.min,
-                        result.min as f64 * cpu_to_ms,
-                        (self.bytes as f64 * byte_to_gb) / (result.min as f64 * cpu_to_s),
-                    ));
-                    max_string.push_str(&format!(
-                        "{} ({:.3} ms) {:.3} gb/s ",
-                        result.max,
-                        result.max as f64 * cpu_to_ms,
-                        (self.bytes as f64 * byte_to_gb) / (result.max as f64 * cpu_to_s),
-                    ));
-                    avg_string.push_str(&format!(
-                        "{:.3} ({:.3} ms) {:.3} gb/s ",
-                        result.total as f64 / self.count as f64,
-                        average * cpu_to_ms,
-                        (self.bytes as f64 * byte_to_gb) / (average * cpu_to_s),
-                    ));
-                }
-                Measurement::PageFaults(_) => {
-                    min_string.push_str(&format!(
-                        "PF: {} ({:.3}kb/fault) ",
-                        result.min,
-                        self.bytes as f64 / (result.min as f64 * 1024.0),
-                    ));
-                    max_string.push_str(&format!(
-                        "PF: {} ({:.3}kb/fault) ",
-                        result.max,
-                        self.bytes as f64 / (result.max as f64 * 1024.0),
-                    ));
-                    avg_string.push_str(&format!(
-                        "PF: {:.3} ({:.3}kb/fault) ",
-                        result.total as f64 / self.count as f64,
-                        self.bytes as f64 / (average * 1024.0),
-                    ));
-                }
-            }
-        }
-
-        write!(f, "{}\n{}\n{}", min_string, max_string, avg_string)
-    }
+    cpu_freq: u64,
 }
 
 impl RepetitionTest {
@@ -477,6 +453,7 @@ impl RepetitionTest {
             measurements,
             count: 0,
             bytes,
+            cpu_freq: estimate_cpu_timer_freq(),
         }
     }
 
@@ -502,11 +479,118 @@ impl RepetitionTest {
             }
             result.total += result_value;
         }
+
+        self.count += 1;
         reset_timer
+    }
+
+    fn print_minimum(&self) {
+        let mut line = String::with_capacity(100);
+        line.push_str("Min:");
+
+        for (result, measurement) in self.results.iter().zip(&self.measurements) {
+            match measurement {
+                Measurement::CpuTime(_) => {
+                    line.push_str(&format!(
+                        " {} ({:.3} ms) {:.3} gb/s",
+                        result.min,
+                        self.cpu_time_to_ms(result.min as f64),
+                        self.calculate_gb_s(result.min as f64),
+                    ));
+                }
+                Measurement::PageFaults(_) => {
+                    line.push_str(&format!(
+                        " PF: {} ({:.3} kb/fault)",
+                        result.min,
+                        self.calculate_kb_fault(result.min as f64),
+                    ));
+                }
+            }
+        }
+
+        print!("\r\x1b[2K{}", line);
+        io::stdout().flush().unwrap();
+    }
+
+    fn print_maximum(&self) {
+        let mut line = String::with_capacity(100);
+        line.push_str("Max:");
+
+        for (result, measurement) in self.results.iter().zip(&self.measurements) {
+            match measurement {
+                Measurement::CpuTime(_) => {
+                    line.push_str(&format!(
+                        " {} ({:.3} ms) {:.3} gb/s",
+                        result.max,
+                        self.cpu_time_to_ms(result.max as f64),
+                        self.calculate_gb_s(result.max as f64),
+                    ));
+                }
+                Measurement::PageFaults(_) => {
+                    line.push_str(&format!(
+                        " PF: {} ({:.3} kb/fault)",
+                        result.max,
+                        self.calculate_kb_fault(result.max as f64),
+                    ));
+                }
+            }
+        }
+
+        print!("\n{}", line);
+    }
+
+    fn print_average(&self) {
+        let mut line = String::with_capacity(100);
+        line.push_str("Avg:");
+
+        for (result, measurement) in self.results.iter().zip(&self.measurements) {
+            match measurement {
+                Measurement::CpuTime(_) => {
+                    line.push_str(&format!(
+                        " {} ({:.3} ms) {:.3} gb/s",
+                        self.average(result),
+                        self.cpu_time_to_ms(self.average(result)),
+                        self.calculate_gb_s(self.average(result)),
+                    ));
+                }
+                Measurement::PageFaults(_) => {
+                    line.push_str(&format!(
+                        " PF: {} ({:.3} kb/fault)",
+                        self.average(result),
+                        self.calculate_kb_fault(self.average(result)),
+                    ));
+                }
+            }
+        }
+        print!("\n{}", line);
     }
 
     fn average(&self, result: &RepetitionResult) -> f64 {
         result.total as f64 / self.count as f64
+    }
+
+    fn cpu_time_to_ms(&self, time: f64) -> f64 {
+        time * 1000.0 / (self.cpu_freq as f64)
+    }
+
+    fn cpu_time_to_s(&self, time: f64) -> f64 {
+        time / (self.cpu_freq as f64)
+    }
+
+    fn bytes_to_gb(&self) -> f64 {
+        (self.bytes as f64) / (1024.0 * 1024.0 * 1024.0)
+    }
+
+    fn bytes_to_kb(&self) -> f64 {
+        (self.bytes as f64) / 1024.0
+    }
+
+    fn calculate_gb_s(&self, time: f64) -> f64 {
+        self.bytes_to_gb() / self.cpu_time_to_s(time)
+    }
+
+    fn calculate_kb_fault(&self, faults: f64) -> f64 {
+        self.bytes_to_kb() / faults
     }
 }
 
