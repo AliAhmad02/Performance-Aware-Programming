@@ -43,14 +43,17 @@ macro_rules! time {
 }
 
 unsafe extern "C" {
-    fn MOVAllBytesASM(count: usize, pointer: *mut u8);
-    fn NOPAllBytesASM(count: usize, pointer: *mut u8);
-    fn CMPAllBytesASM(count: usize, pointer: *mut u8);
-    fn DECAllBytesASM(count: usize, pointer: *mut u8);
+    //    fn MOVAllBytesASM(count: usize, pointer: *mut u8);
+    //    fn NOPAllBytesASM(count: usize, pointer: *mut u8);
+    //    fn CMPAllBytesASM(count: usize, pointer: *mut u8);
+    //    fn DECAllBytesASM(count: usize, pointer: *mut u8);
+    fn NOP3x1AllBytes(count: usize, pointer: *mut u8);
+    fn NOP1x3AllBytes(count: usize, pointer: *mut u8);
+    fn NOP1x9AllBytes(count: usize, pointer: *mut u8);
 
 }
 
-pub fn repetition_test_write_dec(test_time: u64) {
+pub fn repetition_test_nop19(test_time: u64) {
     let num_bytes = 1024 * 1024;
     let mut tester = RepetitionTest::build(
         vec![
@@ -67,7 +70,7 @@ pub fn repetition_test_write_dec(test_time: u64) {
         let start_os_time = read_os_timer();
         tester.start_measurements();
         unsafe {
-            DECAllBytesASM(num_bytes, buffer.as_mut_ptr());
+            NOP1x9AllBytes(num_bytes, buffer.as_mut_ptr());
         }
         let reset_timer = tester.stop_measurements();
         let elapsed_os_time = read_os_timer() - start_os_time;
@@ -83,7 +86,7 @@ pub fn repetition_test_write_dec(test_time: u64) {
     tester.print_average();
 }
 
-pub fn repetition_test_write_cmp(test_time: u64) {
+pub fn repetition_test_nop13(test_time: u64) {
     let num_bytes = 1024 * 1024;
     let mut tester = RepetitionTest::build(
         vec![
@@ -100,7 +103,7 @@ pub fn repetition_test_write_cmp(test_time: u64) {
         let start_os_time = read_os_timer();
         tester.start_measurements();
         unsafe {
-            CMPAllBytesASM(num_bytes, buffer.as_mut_ptr());
+            NOP1x3AllBytes(num_bytes, buffer.as_mut_ptr());
         }
         let reset_timer = tester.stop_measurements();
         let elapsed_os_time = read_os_timer() - start_os_time;
@@ -116,7 +119,7 @@ pub fn repetition_test_write_cmp(test_time: u64) {
     tester.print_average();
 }
 
-pub fn repetition_test_write_nop(test_time: u64) {
+pub fn repetition_test_nop31(test_time: u64) {
     let num_bytes = 1024 * 1024;
     let mut tester = RepetitionTest::build(
         vec![
@@ -133,7 +136,7 @@ pub fn repetition_test_write_nop(test_time: u64) {
         let start_os_time = read_os_timer();
         tester.start_measurements();
         unsafe {
-            NOPAllBytesASM(num_bytes, buffer.as_mut_ptr());
+            NOP3x1AllBytes(num_bytes, buffer.as_mut_ptr());
         }
         let reset_timer = tester.stop_measurements();
         let elapsed_os_time = read_os_timer() - start_os_time;
@@ -149,38 +152,137 @@ pub fn repetition_test_write_nop(test_time: u64) {
     tester.print_average();
 }
 
-pub fn repetition_test_write_mov(test_time: u64) {
-    let num_bytes = 1024 * 1024;
-    let mut tester = RepetitionTest::build(
-        vec![
-            Measurement::CpuTime(CpuTime::new()),
-            Measurement::PageFaults(PageFaults::new()),
-        ],
-        num_bytes,
-    );
-
-    let mut elapsed_total = 0;
-
-    while elapsed_total < test_time {
-        let mut buffer = vec![0; num_bytes];
-        let start_os_time = read_os_timer();
-        tester.start_measurements();
-        unsafe {
-            MOVAllBytesASM(num_bytes, buffer.as_mut_ptr());
-        }
-        let reset_timer = tester.stop_measurements();
-        let elapsed_os_time = read_os_timer() - start_os_time;
-        if reset_timer {
-            elapsed_total = 0;
-            tester.print_minimum();
-        } else {
-            elapsed_total += elapsed_os_time;
-        }
-    }
-
-    tester.print_maximum();
-    tester.print_average();
-}
+//pub fn repetition_test_write_dec(test_time: u64) {
+//    let num_bytes = 1024 * 1024;
+//    let mut tester = RepetitionTest::build(
+//        vec![
+//            Measurement::CpuTime(CpuTime::new()),
+//            Measurement::PageFaults(PageFaults::new()),
+//        ],
+//        num_bytes,
+//    );
+//
+//    let mut elapsed_total = 0;
+//
+//    while elapsed_total < test_time {
+//        let mut buffer = vec![0; num_bytes];
+//        let start_os_time = read_os_timer();
+//        tester.start_measurements();
+//        unsafe {
+//            DECAllBytesASM(num_bytes, buffer.as_mut_ptr());
+//        }
+//        let reset_timer = tester.stop_measurements();
+//        let elapsed_os_time = read_os_timer() - start_os_time;
+//        if reset_timer {
+//            elapsed_total = 0;
+//            tester.print_minimum();
+//        } else {
+//            elapsed_total += elapsed_os_time;
+//        }
+//    }
+//
+//    tester.print_maximum();
+//    tester.print_average();
+//}
+//
+//pub fn repetition_test_write_cmp(test_time: u64) {
+//    let num_bytes = 1024 * 1024;
+//    let mut tester = RepetitionTest::build(
+//        vec![
+//            Measurement::CpuTime(CpuTime::new()),
+//            Measurement::PageFaults(PageFaults::new()),
+//        ],
+//        num_bytes,
+//    );
+//
+//    let mut elapsed_total = 0;
+//
+//    while elapsed_total < test_time {
+//        let mut buffer = vec![0; num_bytes];
+//        let start_os_time = read_os_timer();
+//        tester.start_measurements();
+//        unsafe {
+//            CMPAllBytesASM(num_bytes, buffer.as_mut_ptr());
+//        }
+//        let reset_timer = tester.stop_measurements();
+//        let elapsed_os_time = read_os_timer() - start_os_time;
+//        if reset_timer {
+//            elapsed_total = 0;
+//            tester.print_minimum();
+//        } else {
+//            elapsed_total += elapsed_os_time;
+//        }
+//    }
+//
+//    tester.print_maximum();
+//    tester.print_average();
+//}
+//
+//pub fn repetition_test_write_nop(test_time: u64) {
+//    let num_bytes = 1024 * 1024;
+//    let mut tester = RepetitionTest::build(
+//        vec![
+//            Measurement::CpuTime(CpuTime::new()),
+//            Measurement::PageFaults(PageFaults::new()),
+//        ],
+//        num_bytes,
+//    );
+//
+//    let mut elapsed_total = 0;
+//
+//    while elapsed_total < test_time {
+//        let mut buffer = vec![0; num_bytes];
+//        let start_os_time = read_os_timer();
+//        tester.start_measurements();
+//        unsafe {
+//            NOPAllBytesASM(num_bytes, buffer.as_mut_ptr());
+//        }
+//        let reset_timer = tester.stop_measurements();
+//        let elapsed_os_time = read_os_timer() - start_os_time;
+//        if reset_timer {
+//            elapsed_total = 0;
+//            tester.print_minimum();
+//        } else {
+//            elapsed_total += elapsed_os_time;
+//        }
+//    }
+//
+//    tester.print_maximum();
+//    tester.print_average();
+//}
+//
+//pub fn repetition_test_write_mov(test_time: u64) {
+//    let num_bytes = 1024 * 1024;
+//    let mut tester = RepetitionTest::build(
+//        vec![
+//            Measurement::CpuTime(CpuTime::new()),
+//            Measurement::PageFaults(PageFaults::new()),
+//        ],
+//        num_bytes,
+//    );
+//
+//    let mut elapsed_total = 0;
+//
+//    while elapsed_total < test_time {
+//        let mut buffer = vec![0; num_bytes];
+//        let start_os_time = read_os_timer();
+//        tester.start_measurements();
+//        unsafe {
+//            MOVAllBytesASM(num_bytes, buffer.as_mut_ptr());
+//        }
+//        let reset_timer = tester.stop_measurements();
+//        let elapsed_os_time = read_os_timer() - start_os_time;
+//        if reset_timer {
+//            elapsed_total = 0;
+//            tester.print_minimum();
+//        } else {
+//            elapsed_total += elapsed_os_time;
+//        }
+//    }
+//
+//    tester.print_maximum();
+//    tester.print_average();
+//}
 
 pub fn repetition_test_write_bytes(test_time: u64) {
     let num_bytes = 1024 * 1024;
