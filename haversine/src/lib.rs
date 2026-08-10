@@ -43,34 +43,49 @@ macro_rules! time {
 }
 
 unsafe extern "C" {
+    fn Read_32x8(count: usize, pointer: *const u8, mask: usize);
+    //     fn Read_4x2(count: usize, pointer: *const u8);
+    //     fn Read_8x2(count: usize, pointer: *const u8);
+    //     fn Read_16x2(count: usize, pointer: *const u8);
+    //     fn Read_32x2(count: usize, pointer: *const u8);
+    //     fn Write_x1(count: usize, pointer: *const u8);
+    //     fn Write_x2(count: usize, pointer: *const u8);
+    //     fn Write_x3(count: usize, pointer: *const u8);
+    //     fn Write_x4(count: usize, pointer: *const u8);
+    //     fn Read_x1(count: usize, pointer: *const u8);
+    //     fn Read_x2(count: usize, pointer: *const u8);
+    //     fn Read_x3(count: usize, pointer: *const u8);
+    //     fn Read_x4(count: usize, pointer: *const u8);
     //    fn MOVAllBytesASM(count: usize, pointer: *mut u8);
     //    fn NOPAllBytesASM(count: usize, pointer: *mut u8);
     //    fn CMPAllBytesASM(count: usize, pointer: *mut u8);
     //    fn DECAllBytesASM(count: usize, pointer: *mut u8);
-    fn NOP3x1AllBytes(count: usize, pointer: *mut u8);
-    fn NOP1x3AllBytes(count: usize, pointer: *mut u8);
-    fn NOP1x9AllBytes(count: usize, pointer: *mut u8);
+    // fn NOP3x1AllBytes(count: usize, pointer: *mut u8);
+    // fn NOP1x3AllBytes(count: usize, pointer: *mut u8);
+    // fn NOP1x9AllBytes(count: usize, pointer: *mut u8);
 
 }
 
-pub fn repetition_test_nop19(test_time: u64) {
-    let num_bytes = 1024 * 1024;
+pub fn repetition_test_read_32x8(test_time: u64, mask_pow: u64) {
+    let buffer_size = 1 << 30;
+    let region_size = 1 << mask_pow;
+    let mask = region_size - 1;
     let mut tester = RepetitionTest::build(
         vec![
             Measurement::CpuTime(CpuTime::new()),
             Measurement::PageFaults(PageFaults::new()),
         ],
-        num_bytes,
+        buffer_size,
     );
 
     let mut elapsed_total = 0;
+    let buffer = vec![1; buffer_size];
 
     while elapsed_total < test_time {
-        let mut buffer = vec![0; num_bytes];
         let start_os_time = read_os_timer();
         tester.start_measurements();
         unsafe {
-            NOP1x9AllBytes(num_bytes, buffer.as_mut_ptr());
+            Read_32x8(buffer_size, buffer.as_ptr(), mask);
         }
         let reset_timer = tester.stop_measurements();
         let elapsed_os_time = read_os_timer() - start_os_time;
@@ -86,71 +101,500 @@ pub fn repetition_test_nop19(test_time: u64) {
     tester.print_average();
 }
 
-pub fn repetition_test_nop13(test_time: u64) {
-    let num_bytes = 1024 * 1024;
-    let mut tester = RepetitionTest::build(
-        vec![
-            Measurement::CpuTime(CpuTime::new()),
-            Measurement::PageFaults(PageFaults::new()),
-        ],
-        num_bytes,
-    );
+// pub fn repetition_test_read_32x2(test_time: u64) {
+//     let num_bytes = 1024 * 1024;
+//     let mut tester = RepetitionTest::build(
+//         vec![
+//             Measurement::CpuTime(CpuTime::new()),
+//             Measurement::PageFaults(PageFaults::new()),
+//         ],
+//         num_bytes,
+//     );
+//
+//     let mut elapsed_total = 0;
+//
+//     while elapsed_total < test_time {
+//         let buffer = vec![0; num_bytes];
+//         let start_os_time = read_os_timer();
+//         tester.start_measurements();
+//         unsafe {
+//             Read_32x2(num_bytes, buffer.as_ptr());
+//         }
+//         let reset_timer = tester.stop_measurements();
+//         let elapsed_os_time = read_os_timer() - start_os_time;
+//         if reset_timer {
+//             elapsed_total = 0;
+//             tester.print_minimum();
+//         } else {
+//             elapsed_total += elapsed_os_time;
+//         }
+//     }
+//
+//     tester.print_maximum();
+//     tester.print_average();
+// }
+//
+// pub fn repetition_test_read_16x2(test_time: u64) {
+//     let num_bytes = 1024 * 1024;
+//     let mut tester = RepetitionTest::build(
+//         vec![
+//             Measurement::CpuTime(CpuTime::new()),
+//             Measurement::PageFaults(PageFaults::new()),
+//         ],
+//         num_bytes,
+//     );
+//
+//     let mut elapsed_total = 0;
+//
+//     while elapsed_total < test_time {
+//         let buffer = vec![0; num_bytes];
+//         let start_os_time = read_os_timer();
+//         tester.start_measurements();
+//         unsafe {
+//             Read_16x2(num_bytes, buffer.as_ptr());
+//         }
+//         let reset_timer = tester.stop_measurements();
+//         let elapsed_os_time = read_os_timer() - start_os_time;
+//         if reset_timer {
+//             elapsed_total = 0;
+//             tester.print_minimum();
+//         } else {
+//             elapsed_total += elapsed_os_time;
+//         }
+//     }
+//
+//     tester.print_maximum();
+//     tester.print_average();
+// }
+//
+// pub fn repetition_test_read_8x2(test_time: u64) {
+//     let num_bytes = 1024 * 1024;
+//     let mut tester = RepetitionTest::build(
+//         vec![
+//             Measurement::CpuTime(CpuTime::new()),
+//             Measurement::PageFaults(PageFaults::new()),
+//         ],
+//         num_bytes,
+//     );
+//
+//     let mut elapsed_total = 0;
+//
+//     while elapsed_total < test_time {
+//         let buffer = vec![0; num_bytes];
+//         let start_os_time = read_os_timer();
+//         tester.start_measurements();
+//         unsafe {
+//             Read_8x2(num_bytes, buffer.as_ptr());
+//         }
+//         let reset_timer = tester.stop_measurements();
+//         let elapsed_os_time = read_os_timer() - start_os_time;
+//         if reset_timer {
+//             elapsed_total = 0;
+//             tester.print_minimum();
+//         } else {
+//             elapsed_total += elapsed_os_time;
+//         }
+//     }
+//
+//     tester.print_maximum();
+//     tester.print_average();
+// }
+//
+// pub fn repetition_test_read_4x2(test_time: u64) {
+//     let num_bytes = 1024 * 1024;
+//     let mut tester = RepetitionTest::build(
+//         vec![
+//             Measurement::CpuTime(CpuTime::new()),
+//             Measurement::PageFaults(PageFaults::new()),
+//         ],
+//         num_bytes,
+//     );
+//
+//     let mut elapsed_total = 0;
+//
+//     while elapsed_total < test_time {
+//         let buffer = vec![0; num_bytes];
+//         let start_os_time = read_os_timer();
+//         tester.start_measurements();
+//         unsafe {
+//             Read_4x2(num_bytes, buffer.as_ptr());
+//         }
+//         let reset_timer = tester.stop_measurements();
+//         let elapsed_os_time = read_os_timer() - start_os_time;
+//         if reset_timer {
+//             elapsed_total = 0;
+//             tester.print_minimum();
+//         } else {
+//             elapsed_total += elapsed_os_time;
+//         }
+//     }
+//
+//     tester.print_maximum();
+//     tester.print_average();
+// }
 
-    let mut elapsed_total = 0;
+// pub fn repetition_test_write_x4(test_time: u64) {
+//     let num_bytes = 1024 * 1024;
+//     let mut tester = RepetitionTest::build(
+//         vec![
+//             Measurement::CpuTime(CpuTime::new()),
+//             Measurement::PageFaults(PageFaults::new()),
+//         ],
+//         num_bytes,
+//     );
+//
+//     let mut elapsed_total = 0;
+//
+//     while elapsed_total < test_time {
+//         let buffer = Box::new(10u8);
+//         let start_os_time = read_os_timer();
+//         tester.start_measurements();
+//         unsafe {
+//             Write_x4(num_bytes, &*buffer as *const u8);
+//         }
+//         let reset_timer = tester.stop_measurements();
+//         let elapsed_os_time = read_os_timer() - start_os_time;
+//         if reset_timer {
+//             elapsed_total = 0;
+//             tester.print_minimum();
+//         } else {
+//             elapsed_total += elapsed_os_time;
+//         }
+//     }
+//
+//     tester.print_maximum();
+//     tester.print_average();
+// }
+//
+// pub fn repetition_test_write_x3(test_time: u64) {
+//     let num_bytes = 1024 * 1024;
+//     let mut tester = RepetitionTest::build(
+//         vec![
+//             Measurement::CpuTime(CpuTime::new()),
+//             Measurement::PageFaults(PageFaults::new()),
+//         ],
+//         num_bytes,
+//     );
+//
+//     let mut elapsed_total = 0;
+//
+//     while elapsed_total < test_time {
+//         let buffer = Box::new(10u8);
+//         let start_os_time = read_os_timer();
+//         tester.start_measurements();
+//         unsafe {
+//             Write_x3(num_bytes, &*buffer as *const u8);
+//         }
+//         let reset_timer = tester.stop_measurements();
+//         let elapsed_os_time = read_os_timer() - start_os_time;
+//         if reset_timer {
+//             elapsed_total = 0;
+//             tester.print_minimum();
+//         } else {
+//             elapsed_total += elapsed_os_time;
+//         }
+//     }
+//
+//     tester.print_maximum();
+//     tester.print_average();
+// }
+//
+// pub fn repetition_test_write_x2(test_time: u64) {
+//     let num_bytes = 1024 * 1024;
+//     let mut tester = RepetitionTest::build(
+//         vec![
+//             Measurement::CpuTime(CpuTime::new()),
+//             Measurement::PageFaults(PageFaults::new()),
+//         ],
+//         num_bytes,
+//     );
+//
+//     let mut elapsed_total = 0;
+//
+//     while elapsed_total < test_time {
+//         let buffer = Box::new(10u8);
+//         let start_os_time = read_os_timer();
+//         tester.start_measurements();
+//         unsafe {
+//             Write_x2(num_bytes, &*buffer as *const u8);
+//         }
+//         let reset_timer = tester.stop_measurements();
+//         let elapsed_os_time = read_os_timer() - start_os_time;
+//         if reset_timer {
+//             elapsed_total = 0;
+//             tester.print_minimum();
+//         } else {
+//             elapsed_total += elapsed_os_time;
+//         }
+//     }
+//
+//     tester.print_maximum();
+//     tester.print_average();
+// }
+//
+// pub fn repetition_test_write_x1(test_time: u64) {
+//     let num_bytes = 1024 * 1024;
+//     let mut tester = RepetitionTest::build(
+//         vec![
+//             Measurement::CpuTime(CpuTime::new()),
+//             Measurement::PageFaults(PageFaults::new()),
+//         ],
+//         num_bytes,
+//     );
+//
+//     let mut elapsed_total = 0;
+//
+//     while elapsed_total < test_time {
+//         let buffer = Box::new(10u8);
+//         let start_os_time = read_os_timer();
+//         tester.start_measurements();
+//         unsafe {
+//             Write_x1(num_bytes, &*buffer as *const u8);
+//         }
+//         let reset_timer = tester.stop_measurements();
+//         let elapsed_os_time = read_os_timer() - start_os_time;
+//         if reset_timer {
+//             elapsed_total = 0;
+//             tester.print_minimum();
+//         } else {
+//             elapsed_total += elapsed_os_time;
+//         }
+//     }
+//
+//     tester.print_maximum();
+//     tester.print_average();
+// }
+//
+// pub fn repetition_test_read_x4(test_time: u64) {
+//     let num_bytes = 1024 * 1024;
+//     let mut tester = RepetitionTest::build(
+//         vec![
+//             Measurement::CpuTime(CpuTime::new()),
+//             Measurement::PageFaults(PageFaults::new()),
+//         ],
+//         num_bytes,
+//     );
+//
+//     let mut elapsed_total = 0;
+//
+//     while elapsed_total < test_time {
+//         let buffer = Box::new(10u8);
+//         let start_os_time = read_os_timer();
+//         tester.start_measurements();
+//         unsafe {
+//             Read_x4(num_bytes, &*buffer as *const u8);
+//         }
+//         let reset_timer = tester.stop_measurements();
+//         let elapsed_os_time = read_os_timer() - start_os_time;
+//         if reset_timer {
+//             elapsed_total = 0;
+//             tester.print_minimum();
+//         } else {
+//             elapsed_total += elapsed_os_time;
+//         }
+//     }
+//
+//     tester.print_maximum();
+//     tester.print_average();
+// }
+//
+// pub fn repetition_test_read_x3(test_time: u64) {
+//     let num_bytes = 1024 * 1024;
+//     let mut tester = RepetitionTest::build(
+//         vec![
+//             Measurement::CpuTime(CpuTime::new()),
+//             Measurement::PageFaults(PageFaults::new()),
+//         ],
+//         num_bytes,
+//     );
+//
+//     let mut elapsed_total = 0;
+//
+//     while elapsed_total < test_time {
+//         let buffer = Box::new(10u8);
+//         let start_os_time = read_os_timer();
+//         tester.start_measurements();
+//         unsafe {
+//             Read_x3(num_bytes, &*buffer as *const u8);
+//         }
+//         let reset_timer = tester.stop_measurements();
+//         let elapsed_os_time = read_os_timer() - start_os_time;
+//         if reset_timer {
+//             elapsed_total = 0;
+//             tester.print_minimum();
+//         } else {
+//             elapsed_total += elapsed_os_time;
+//         }
+//     }
+//
+//     tester.print_maximum();
+//     tester.print_average();
+// }
+//
+// pub fn repetition_test_read_x2(test_time: u64) {
+//     let num_bytes = 1024 * 1024;
+//     let mut tester = RepetitionTest::build(
+//         vec![
+//             Measurement::CpuTime(CpuTime::new()),
+//             Measurement::PageFaults(PageFaults::new()),
+//         ],
+//         num_bytes,
+//     );
+//
+//     let mut elapsed_total = 0;
+//
+//     while elapsed_total < test_time {
+//         let buffer = Box::new(10u8);
+//         let start_os_time = read_os_timer();
+//         tester.start_measurements();
+//         unsafe {
+//             Read_x2(num_bytes, &*buffer as *const u8);
+//         }
+//         let reset_timer = tester.stop_measurements();
+//         let elapsed_os_time = read_os_timer() - start_os_time;
+//         if reset_timer {
+//             elapsed_total = 0;
+//             tester.print_minimum();
+//         } else {
+//             elapsed_total += elapsed_os_time;
+//         }
+//     }
+//
+//     tester.print_maximum();
+//     tester.print_average();
+// }
+//
+// pub fn repetition_test_read_x1(test_time: u64) {
+//     let num_bytes = 1024 * 1024;
+//     let mut tester = RepetitionTest::build(
+//         vec![
+//             Measurement::CpuTime(CpuTime::new()),
+//             Measurement::PageFaults(PageFaults::new()),
+//         ],
+//         num_bytes,
+//     );
+//
+//     let mut elapsed_total = 0;
+//
+//     while elapsed_total < test_time {
+//         let buffer = Box::new(10u8);
+//         let start_os_time = read_os_timer();
+//         tester.start_measurements();
+//         unsafe {
+//             Read_x1(num_bytes, &*buffer as *const u8);
+//         }
+//         let reset_timer = tester.stop_measurements();
+//         let elapsed_os_time = read_os_timer() - start_os_time;
+//         if reset_timer {
+//             elapsed_total = 0;
+//             tester.print_minimum();
+//         } else {
+//             elapsed_total += elapsed_os_time;
+//         }
+//     }
+//
+//     tester.print_maximum();
+//     tester.print_average();
+// }
 
-    while elapsed_total < test_time {
-        let mut buffer = vec![0; num_bytes];
-        let start_os_time = read_os_timer();
-        tester.start_measurements();
-        unsafe {
-            NOP1x3AllBytes(num_bytes, buffer.as_mut_ptr());
-        }
-        let reset_timer = tester.stop_measurements();
-        let elapsed_os_time = read_os_timer() - start_os_time;
-        if reset_timer {
-            elapsed_total = 0;
-            tester.print_minimum();
-        } else {
-            elapsed_total += elapsed_os_time;
-        }
-    }
-
-    tester.print_maximum();
-    tester.print_average();
-}
-
-pub fn repetition_test_nop31(test_time: u64) {
-    let num_bytes = 1024 * 1024;
-    let mut tester = RepetitionTest::build(
-        vec![
-            Measurement::CpuTime(CpuTime::new()),
-            Measurement::PageFaults(PageFaults::new()),
-        ],
-        num_bytes,
-    );
-
-    let mut elapsed_total = 0;
-
-    while elapsed_total < test_time {
-        let mut buffer = vec![0; num_bytes];
-        let start_os_time = read_os_timer();
-        tester.start_measurements();
-        unsafe {
-            NOP3x1AllBytes(num_bytes, buffer.as_mut_ptr());
-        }
-        let reset_timer = tester.stop_measurements();
-        let elapsed_os_time = read_os_timer() - start_os_time;
-        if reset_timer {
-            elapsed_total = 0;
-            tester.print_minimum();
-        } else {
-            elapsed_total += elapsed_os_time;
-        }
-    }
-
-    tester.print_maximum();
-    tester.print_average();
-}
+// pub fn repetition_test_nop19(test_time: u64) {
+//     let num_bytes = 1024 * 1024;
+//     let mut tester = RepetitionTest::build(
+//         vec![
+//             Measurement::CpuTime(CpuTime::new()),
+//             Measurement::PageFaults(PageFaults::new()),
+//         ],
+//         num_bytes,
+//     );
+//
+//     let mut elapsed_total = 0;
+//
+//     while elapsed_total < test_time {
+//         let mut buffer = vec![0; num_bytes];
+//         let start_os_time = read_os_timer();
+//         tester.start_measurements();
+//         unsafe {
+//             NOP1x9AllBytes(num_bytes, buffer.as_mut_ptr());
+//         }
+//         let reset_timer = tester.stop_measurements();
+//         let elapsed_os_time = read_os_timer() - start_os_time;
+//         if reset_timer {
+//             elapsed_total = 0;
+//             tester.print_minimum();
+//         } else {
+//             elapsed_total += elapsed_os_time;
+//         }
+//     }
+//
+//     tester.print_maximum();
+//     tester.print_average();
+// }
+//
+// pub fn repetition_test_nop13(test_time: u64) {
+//     let num_bytes = 1024 * 1024;
+//     let mut tester = RepetitionTest::build(
+//         vec![
+//             Measurement::CpuTime(CpuTime::new()),
+//             Measurement::PageFaults(PageFaults::new()),
+//         ],
+//         num_bytes,
+//     );
+//
+//     let mut elapsed_total = 0;
+//
+//     while elapsed_total < test_time {
+//         let mut buffer = vec![0; num_bytes];
+//         let start_os_time = read_os_timer();
+//         tester.start_measurements();
+//         unsafe {
+//             NOP1x3AllBytes(num_bytes, buffer.as_mut_ptr());
+//         }
+//         let reset_timer = tester.stop_measurements();
+//         let elapsed_os_time = read_os_timer() - start_os_time;
+//         if reset_timer {
+//             elapsed_total = 0;
+//             tester.print_minimum();
+//         } else {
+//             elapsed_total += elapsed_os_time;
+//         }
+//     }
+//
+//     tester.print_maximum();
+//     tester.print_average();
+// }
+//
+// pub fn repetition_test_nop31(test_time: u64) {
+//     let num_bytes = 1024 * 1024;
+//     let mut tester = RepetitionTest::build(
+//         vec![
+//             Measurement::CpuTime(CpuTime::new()),
+//             Measurement::PageFaults(PageFaults::new()),
+//         ],
+//         num_bytes,
+//     );
+//
+//     let mut elapsed_total = 0;
+//
+//     while elapsed_total < test_time {
+//         let mut buffer = vec![0; num_bytes];
+//         let start_os_time = read_os_timer();
+//         tester.start_measurements();
+//         unsafe {
+//             NOP3x1AllBytes(num_bytes, buffer.as_mut_ptr());
+//         }
+//         let reset_timer = tester.stop_measurements();
+//         let elapsed_os_time = read_os_timer() - start_os_time;
+//         if reset_timer {
+//             elapsed_total = 0;
+//             tester.print_minimum();
+//         } else {
+//             elapsed_total += elapsed_os_time;
+//         }
+//     }
+//
+//     tester.print_maximum();
+//     tester.print_average();
+// }
 
 //pub fn repetition_test_write_dec(test_time: u64) {
 //    let num_bytes = 1024 * 1024;
