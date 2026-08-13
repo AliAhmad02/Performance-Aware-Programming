@@ -67,7 +67,7 @@ unsafe extern "C" {
 
 }
 
-pub fn repetition_test_double_loop_read_32x8(test_time: u64, region_size: usize) {
+pub fn repetition_test_double_loop_read_32x8(test_time: u64, region_size: usize, alignment: usize) {
     let buffer_size = 1024 * 1024 * 1024;
     let outer_count = buffer_size / region_size;
     let inner_count = region_size / 256;
@@ -87,7 +87,7 @@ pub fn repetition_test_double_loop_read_32x8(test_time: u64, region_size: usize)
         let start_os_time = read_os_timer();
         tester.start_measurements();
         unsafe {
-            DoubleLoopRead_32x8(outer_count, buffer.as_ptr(), inner_count);
+            DoubleLoopRead_32x8(outer_count, buffer.as_ptr().wrapping_add(alignment), inner_count);
         }
         let reset_timer = tester.stop_measurements();
         let elapsed_os_time = read_os_timer() - start_os_time;
