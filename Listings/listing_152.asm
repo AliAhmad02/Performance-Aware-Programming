@@ -2,6 +2,10 @@ global Read_32x8
 
 section .text
 
+; rdi: count
+; rsi: data pointer
+; rdx: mask
+
 Read_32x8:
     xor r9, r9
     mov rax, rsi

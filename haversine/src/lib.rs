@@ -43,7 +43,8 @@ macro_rules! time {
 }
 
 unsafe extern "C" {
-    fn Read_32x8(count: usize, pointer: *const u8, mask: usize);
+    fn DoubleLoopRead_32x8(outer_count: usize, pointer: *const u8, inner_count: usize);
+    //    fn Read_32x8(count: usize, pointer: *const u8, mask: usize);
     //     fn Read_4x2(count: usize, pointer: *const u8);
     //     fn Read_8x2(count: usize, pointer: *const u8);
     //     fn Read_16x2(count: usize, pointer: *const u8);
@@ -66,16 +67,17 @@ unsafe extern "C" {
 
 }
 
-pub fn repetition_test_read_32x8(test_time: u64, mask_pow: u64) {
-    let buffer_size = 1 << 30;
-    let region_size = 1 << mask_pow;
-    let mask = region_size - 1;
+pub fn repetition_test_double_loop_read_32x8(test_time: u64, region_size: usize) {
+    let buffer_size = 1024 * 1024 * 1024;
+    let outer_count = buffer_size / region_size;
+    let inner_count = region_size / 256;
+    let total_size = outer_count * region_size;
     let mut tester = RepetitionTest::build(
         vec![
             Measurement::CpuTime(CpuTime::new()),
             Measurement::PageFaults(PageFaults::new()),
         ],
-        buffer_size,
+        total_size,
     );
 
     let mut elapsed_total = 0;
@@ -85,7 +87,7 @@ pub fn repetition_test_read_32x8(test_time: u64, mask_pow: u64) {
         let start_os_time = read_os_timer();
         tester.start_measurements();
         unsafe {
-            Read_32x8(buffer_size, buffer.as_ptr(), mask);
+            DoubleLoopRead_32x8(outer_count, buffer.as_ptr(), inner_count);
         }
         let reset_timer = tester.stop_measurements();
         let elapsed_os_time = read_os_timer() - start_os_time;
@@ -100,6 +102,41 @@ pub fn repetition_test_read_32x8(test_time: u64, mask_pow: u64) {
     tester.print_maximum();
     tester.print_average();
 }
+
+// pub fn repetition_test_read_32x8(test_time: u64, mask_pow: u64) {
+//     let buffer_size = 1 << 30;
+//     let region_size = 1 << mask_pow;
+//     let mask = region_size - 1;
+//     let mut tester = RepetitionTest::build(
+//         vec![
+//             Measurement::CpuTime(CpuTime::new()),
+//             Measurement::PageFaults(PageFaults::new()),
+//         ],
+//         buffer_size,
+//     );
+//
+//     let mut elapsed_total = 0;
+//     let buffer = vec![1; buffer_size];
+//
+//     while elapsed_total < test_time {
+//         let start_os_time = read_os_timer();
+//         tester.start_measurements();
+//         unsafe {
+//             Read_32x8(buffer_size, buffer.as_ptr(), mask);
+//         }
+//         let reset_timer = tester.stop_measurements();
+//         let elapsed_os_time = read_os_timer() - start_os_time;
+//         if reset_timer {
+//             elapsed_total = 0;
+//             tester.print_minimum();
+//         } else {
+//             elapsed_total += elapsed_os_time;
+//         }
+//     }
+//
+//     tester.print_maximum();
+//     tester.print_average();
+// }
 
 // pub fn repetition_test_read_32x2(test_time: u64) {
 //     let num_bytes = 1024 * 1024;
