@@ -43,7 +43,19 @@ macro_rules! time {
 }
 
 unsafe extern "C" {
-    fn DoubleLoopRead_32x8(outer_count: usize, pointer: *const u8, inner_count: usize);
+    fn TemporalWrite(
+        read_pointer: *const BytesAligned32,
+        write_pointer: *mut BytesAligned32,
+        inner_count: usize,
+        outer_count: usize,
+    );
+    fn NonTemporalWrite(
+        read_pointer: *const BytesAligned32,
+        write_pointer: *mut BytesAligned32,
+        inner_count: usize,
+        outer_count: usize,
+    );
+    //     fn DoubleLoopRead_32x8(outer_count: usize, pointer: *const u8, inner_count: usize);
     //    fn Read_32x8(count: usize, pointer: *const u8, mask: usize);
     //     fn Read_4x2(count: usize, pointer: *const u8);
     //     fn Read_8x2(count: usize, pointer: *const u8);
@@ -67,12 +79,35 @@ unsafe extern "C" {
 
 }
 
-pub fn repetition_test_double_loop_read_32x8(test_time: u64, region_size: usize, alignment: usize) {
+// A vector inherits its alignment from its datatype, so we can
+// create a 32-byte aligned vector by storing a 32-byte aligned
+// struct that holds 32 bytes of data
+#[repr(C, align(32))]
+#[derive(Copy, Clone)]
+struct BytesAligned32 {
+    values: [u8; 32],
+}
+
+impl Default for BytesAligned32 {
+    fn default() -> Self {
+        BytesAligned32 { values: [1; 32] }
+    }
+}
+
+pub fn repetition_test_compare_temp_nontemp(test_time: u64, region_size: usize) {
     let buffer_size = 1024 * 1024 * 1024;
     let outer_count = buffer_size / region_size;
     let inner_count = region_size / 256;
     let total_size = outer_count * region_size;
-    let mut tester = RepetitionTest::build(
+
+    let mut tester_temp = RepetitionTest::build(
+        vec![
+            Measurement::CpuTime(CpuTime::new()),
+            Measurement::PageFaults(PageFaults::new()),
+        ],
+        total_size,
+    );
+    let mut tester_nontemp = RepetitionTest::build(
         vec![
             Measurement::CpuTime(CpuTime::new()),
             Measurement::PageFaults(PageFaults::new()),
@@ -80,27 +115,63 @@ pub fn repetition_test_double_loop_read_32x8(test_time: u64, region_size: usize,
         total_size,
     );
 
-    let mut elapsed_total = 0;
-    let buffer = vec![1; buffer_size];
+    println!("Temporal results:");
 
+    let mut read_buffer = vec![BytesAligned32::default(); region_size / 32];
+    let mut write_buffer = vec![BytesAligned32::default(); buffer_size / 32];
+    let mut elapsed_total = 0;
     while elapsed_total < test_time {
         let start_os_time = read_os_timer();
-        tester.start_measurements();
+        tester_temp.start_measurements();
         unsafe {
-            DoubleLoopRead_32x8(outer_count, buffer.as_ptr().wrapping_add(alignment), inner_count);
+            TemporalWrite(
+                read_buffer.as_ptr(),
+                write_buffer.as_mut_ptr(),
+                inner_count,
+                outer_count,
+            );
         }
-        let reset_timer = tester.stop_measurements();
+        let reset_timer = tester_temp.stop_measurements();
         let elapsed_os_time = read_os_timer() - start_os_time;
         if reset_timer {
             elapsed_total = 0;
-            tester.print_minimum();
+            tester_temp.print_minimum();
         } else {
             elapsed_total += elapsed_os_time;
         }
     }
 
-    tester.print_maximum();
-    tester.print_average();
+    tester_temp.print_maximum();
+    tester_temp.print_average();
+
+    println!("\nNon-Temporal results:");
+
+    read_buffer = vec![BytesAligned32::default(); region_size / 32];
+    write_buffer = vec![BytesAligned32::default(); buffer_size / 32];
+    elapsed_total = 0;
+    while elapsed_total < test_time {
+        let start_os_time = read_os_timer();
+        tester_nontemp.start_measurements();
+        unsafe {
+            NonTemporalWrite(
+                read_buffer.as_ptr(),
+                write_buffer.as_mut_ptr(),
+                inner_count,
+                outer_count,
+            );
+        }
+        let reset_timer = tester_nontemp.stop_measurements();
+        let elapsed_os_time = read_os_timer() - start_os_time;
+        if reset_timer {
+            elapsed_total = 0;
+            tester_nontemp.print_minimum();
+        } else {
+            elapsed_total += elapsed_os_time;
+        }
+    }
+
+    tester_nontemp.print_maximum();
+    tester_nontemp.print_average();
 }
 
 // pub fn repetition_test_read_32x8(test_time: u64, mask_pow: u64) {
