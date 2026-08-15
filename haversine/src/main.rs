@@ -4,7 +4,7 @@ fn main() {
     let region_sizes = [1 << 12, 1 << 17, 1 << 21, 1 << 27];
     for size in region_sizes {
         println!("------------Size={}------------", size);
-            haversine::repetition_test_compare_temp_nontemp(test_time, size);
-            println!("\n");
+        haversine::assembly_tests::repetition_test_compare_temp_nontemp(test_time, size);
+        println!("\n");
     }
 }
