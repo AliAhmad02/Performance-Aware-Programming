@@ -1,7 +1,8 @@
 pub mod assembly_tests;
-use core::f64;
+use core::arch::x86_64::{_mm_cvtsd_f64, _mm_set_sd, _mm_sqrt_sd};
 use rand::RngExt;
 use std::arch::{asm, x86_64::_rdtsc};
+use std::f64::consts::PI;
 use std::fmt::Write as Write1;
 use std::io::{self, Read, Write};
 use std::path::Path;
@@ -41,6 +42,66 @@ macro_rules! time {
             return_value
         }
     };
+}
+
+pub fn get_max_diff_funcs(
+    f: fn(f64) -> f64,
+    g: fn(f64) -> f64,
+    rng_min: f64,
+    rng_max: f64,
+    rng_count: u32,
+) -> f64 {
+    let mut max_diff = 0.0;
+    for i in 0..rng_count {
+        let t_step = i as f64 / (rng_count as f64 - 1.0);
+        let input = (1.0 - t_step) * rng_min + t_step * rng_max;
+        let diff = (f(input) - g(input)).abs();
+        if max_diff < diff {
+            max_diff = diff
+        }
+    }
+    max_diff
+}
+
+pub fn sin_quarter(x: f64) -> f64 {
+    let half_pi = PI / 2.0;
+    let abs_x = x.abs();
+    let x_shifted = if abs_x > half_pi { PI - abs_x } else { abs_x };
+    const A: f64 =
+        -0.3357488673628103541807525733876701910953780492546723687387637750157263772845455;
+    const B: f64 = 1.164012859946630796034863328523423717191309716948615456152205566227330270901187;
+
+    let pos_result = A * x_shifted.powi(2) + B * x_shifted;
+
+    if x > 0.0 { pos_result } else { -pos_result }
+}
+
+pub fn sin_half(x: f64) -> f64 {
+    if x > 0.0 {
+        -4.0 / PI.powi(2) * x.powi(2) + 4.0 / PI * x
+    } else {
+        // use sin(-x)=sin(x). First term has sign flipped
+        // by the above identity. Second term has sign flipped
+        // by sin->-sin but it is flipped again by -x->x, so
+        // we end up with an identical second term
+        4.0 / PI.powi(2) * x.powi(2) + 4.0 / PI * x
+    }
+}
+
+pub fn cos_quarter(x: f64) -> f64 {
+    sin_quarter(x + PI / 2.0)
+}
+
+pub fn asin_ce(x: f64) -> f64 {
+    x
+}
+
+pub fn sqrt_ce(x: f64) -> f64 {
+    unsafe {
+        let xmm = _mm_set_sd(x);
+        let sqrt = _mm_sqrt_sd(xmm, xmm);
+        _mm_cvtsd_f64(sqrt)
+    }
 }
 
 pub fn repetition_test_write_bytes(test_time: u64) {
