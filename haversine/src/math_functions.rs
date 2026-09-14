@@ -1,7 +1,8 @@
 use core::arch::x86_64::{
-    _mm_cvtsd_f64, _mm_fmadd_sd, _mm_fmsub_sd, _mm_mul_sd, _mm_set_sd, _mm_sqrt_sd,
+    __m256d, _CMP_GT_OS, _mm_cvtsd_f64, _mm_fmadd_sd, _mm_fmsub_sd, _mm_mul_sd, _mm_set_sd,
+    _mm_sqrt_sd, _mm256_andnot_pd, _mm256_cmp_pd, _mm256_set_pd, _mm256_set1_pd, _mm256_store_pd,
 };
-use std::f64::consts::PI;
+use std::{f64::consts::PI, fmt::Binary, fmt::Display};
 
 static SINE_TAYLOR_COEFFS: [f64; 16] = [
     1.0,
@@ -531,6 +532,70 @@ pub fn benchmark_math_functions() {
     }
 }
 
+pub fn simd_gt_mask(v1: &AvxPackedDoubles, v2: &AvxPackedDoubles) -> AvxPackedDoubles {
+    unsafe { _mm256_cmp_pd::<_CMP_GT_OS>(v1.into(), v2.into()).into() }
+}
+
+pub fn simd_fabs(values: &AvxPackedDoubles) -> AvxPackedDoubles {
+    let neg_zero_packed = AvxPackedDoubles::from(-0.0);
+    let abs_packed = unsafe { _mm256_andnot_pd(neg_zero_packed.into(), values.into()) };
+    abs_packed.into()
+}
+
+// This function saves redundant squaring of the input in the
+// polynomial expansion by passign in the squared value directly
+// (in this case the squared value is just x itself)
+pub fn asin_sqrt_no_square_ce(x: f64) -> f64 {
+    // We need to check sqrt(x)>1/sqrt(2) -> x > 0.5
+    if x > 0.5 {
+        let x_shifted = 1.0 - x;
+        PI / 2.0
+            - approx_from_coeff_table_no_square(
+                sqrt_ce(x_shifted),
+                x_shifted,
+                ARCSINE_MINIMAX_COEFFS[16],
+            )
+    } else {
+        approx_from_coeff_table_no_square(sqrt_ce(x), x, ARCSINE_MINIMAX_COEFFS[16])
+    }
+}
+
+// This function just returns the abs(sin(x)). It is
+// useful when we don't care about the sign (e.g. if we
+// want to square the value later), so it saves us a
+// range check and negation at the end
+pub fn abs_sine_ce(x: f64) -> f64 {
+    let half_pi = PI / 2.0;
+    let abs_x = x.abs();
+    let x_shifted = if abs_x > half_pi { PI - abs_x } else { abs_x };
+    sin_no_rr_ce(x_shifted)
+}
+
+// This one assumes we are already in the x>0 range
+// This one saves an absolute value and range check and
+// negation at the end
+pub fn sin_positive_ce(x: f64) -> f64 {
+    let half_pi = PI / 2.0;
+    let x_shifted = if x > half_pi { PI - x } else { x };
+    sin_no_rr_ce(x_shifted)
+}
+
+pub fn sin_no_rr_ce(x: f64) -> f64 {
+    approx_from_coeff_table(x, SINE_MINIMAX_COEFFS[9])
+}
+
+// If we want to do asin(sqrt(x)) we can optimize one
+// square root away, as the range reduction for asin
+// squares the input and thus does not need sqrt(x)
+pub fn asin_sqrt_ce(x: f64) -> f64 {
+    // We need to check sqrt(x)>1/sqrt(2) -> x > 0.5
+    if x > 0.5 {
+        PI / 2.0 - approx_from_coeff_table(sqrt_ce(1.0 - x), ARCSINE_MINIMAX_COEFFS[16])
+    } else {
+        approx_from_coeff_table(sqrt_ce(x), ARCSINE_MINIMAX_COEFFS[16])
+    }
+}
+
 pub fn cos_ce(x: f64) -> f64 {
     sin_ce(x + PI / 2.0)
 }
@@ -570,17 +635,25 @@ fn sin_quarter_from_table(x: f64, coeffs: &[f64]) -> f64 {
     if x > 0.0 { pos_result } else { -pos_result }
 }
 
-fn approx_from_coeff_table(x: f64, coeffs: &[f64]) -> f64 {
-    unsafe {
-        let n = coeffs.len();
-        let x2 = _mm_set_sd(x * x);
-        let mut result = _mm_set_sd(coeffs[n - 1]);
-        for i in (0..(n - 1)).rev() {
-            let coeff = _mm_set_sd(coeffs[i]);
-            result = _mm_fmadd_sd(x2, result, coeff);
-        }
-        _mm_cvtsd_f64(result) * x
+// This takes the square directly so that we don't have to compute it
+fn approx_from_coeff_table_no_square(x: f64, x2: f64, coeffs: &[f64]) -> f64 {
+    let n = coeffs.len();
+    let mut result = coeffs[n - 1];
+    for i in (0..(n - 1)).rev() {
+        let coeff = coeffs[i];
+        result = x2.mul_add(result, coeff);
     }
+    result * x
+}
+
+fn approx_from_coeff_table(x: f64, coeffs: &[f64]) -> f64 {
+    let n = coeffs.len();
+    let x2 = x * x;
+    let mut result = coeffs[n - 1];
+    for i in (0..(n - 1)).rev() {
+        result = x2.mul_add(result, coeffs[i]);
+    }
+    result * x
 }
 
 fn sin_quarter_taylor_horner_fm(x: f64, n: u32) -> f64 {
@@ -731,4 +804,77 @@ fn sin_half(x: f64) -> f64 {
 
 fn cos_quarter(x: f64) -> f64 {
     sin_quarter(x + PI / 2.0)
+}
+
+impl From<AvxPackedDoubles> for __m256d {
+    fn from(value: AvxPackedDoubles) -> Self {
+        value.0
+    }
+}
+
+impl From<&AvxPackedDoubles> for __m256d {
+    fn from(value: &AvxPackedDoubles) -> Self {
+        value.0
+    }
+}
+
+#[repr(align(32))]
+pub struct AvxPackedDoubles(__m256d);
+
+impl AvxPackedDoubles {
+    fn new() -> Self {
+        Self::from(0.0)
+    }
+
+    fn to_array(&self) -> [f64; 4] {
+        let mut array = [0.0; 4];
+        unsafe {
+            _mm256_store_pd(array.as_mut_ptr(), self.0);
+        };
+        array
+    }
+}
+
+impl Default for AvxPackedDoubles {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl From<__m256d> for AvxPackedDoubles {
+    fn from(value: __m256d) -> Self {
+        AvxPackedDoubles(value)
+    }
+}
+
+impl From<f64> for AvxPackedDoubles {
+    fn from(value: f64) -> Self {
+        unsafe { AvxPackedDoubles(_mm256_set1_pd(value)) }
+    }
+}
+
+impl From<[f64; 4]> for AvxPackedDoubles {
+    fn from(value: [f64; 4]) -> Self {
+        // The values are stored in reverse order compared to what we pass
+        // in, so we reverse it to get the same order in the output
+        unsafe { AvxPackedDoubles(_mm256_set_pd(value[3], value[2], value[1], value[0])) }
+    }
+}
+
+impl Display for AvxPackedDoubles {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{:?}", self.to_array())
+    }
+}
+
+impl Binary for AvxPackedDoubles {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let joined_string = self
+            .to_array()
+            .into_iter()
+            .map(|x| format!("{:b}", x.to_bits()))
+            .collect::<Vec<String>>()
+            .join(", ");
+        write!(f, "[{}]", joined_string)
+    }
 }

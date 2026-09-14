@@ -1,7 +1,12 @@
 pub mod assembly_tests;
 pub mod math_functions;
+use math_functions::{
+    abs_sine_ce, asin_ce, asin_sqrt_ce, asin_sqrt_no_square_ce, cos_ce, sin_ce, sin_no_rr_ce,
+    sin_positive_ce, sqrt_ce,
+};
 use rand::RngExt;
 use std::arch::{asm, x86_64::_rdtsc};
+use std::f64::consts::PI;
 use std::fmt::Write as Write1;
 use std::io::{self, Read, Write};
 use std::path::Path;
@@ -17,7 +22,6 @@ const OS_TIMER_FREQ: u64 = 1_000_000;
 // has to happen at compile time)
 static PROFILE_RESULTS: LazyLock<Mutex<Vec<ProfileResult>>> =
     LazyLock::new(|| Mutex::new(Vec::with_capacity(100)));
-
 
 #[macro_export]
 macro_rules! time_simple {
@@ -44,6 +48,529 @@ macro_rules! time {
     };
 }
 
+pub fn profile_fma_dep_chain_interleaved() {
+    for chain_length in (10..=320).step_by(10) {
+        let rep_count = 1024 * 1024;
+        let chain_count = rep_count / chain_length;
+
+        println!("\n-----------------Chain Length = {chain_length}-----------------");
+        let profile_func = || fma_dep_chain_interleaved(chain_count, chain_length);
+        repetition_test_generic(10_000_000, rep_count, profile_func);
+    }
+}
+
+pub fn profile_fma_dep_chain() {
+    for chain_length in (10..=320).step_by(10) {
+        let rep_count = 1024 * 1024;
+        let chain_count = rep_count / chain_length;
+
+        println!("\n-----------------Chain Length = {chain_length}-----------------");
+        let profile_func = || fma_dep_chain(chain_count, chain_length);
+        repetition_test_generic(10_000_000, rep_count, profile_func);
+    }
+}
+
+fn fma_dep_chain_interleaved(chain_count: usize, chain_length: usize) {
+    // We do 10x interleaving to get the maximum performance, because
+    // zen2 has latency=5 & throughput=0.5 for fma(xmm,xmm,xmm)
+    for _ in (0..chain_count).step_by(10) {
+        let x2 = std::hint::black_box(0.0f64);
+        let m = std::hint::black_box(0.0f64);
+        let mut r0 = std::hint::black_box(0.0f64);
+        let mut r1 = std::hint::black_box(0.0f64);
+        let mut r2 = std::hint::black_box(0.0f64);
+        let mut r3 = std::hint::black_box(0.0f64);
+        let mut r4 = std::hint::black_box(0.0f64);
+        let mut r5 = std::hint::black_box(0.0f64);
+        let mut r6 = std::hint::black_box(0.0f64);
+        let mut r7 = std::hint::black_box(0.0f64);
+        let mut r8 = std::hint::black_box(0.0f64);
+        let mut r9 = std::hint::black_box(0.0f64);
+
+        for _ in 0..chain_length {
+            r0 = r0.mul_add(x2, m);
+            r1 = r1.mul_add(x2, m);
+            r2 = r2.mul_add(x2, m);
+            r3 = r3.mul_add(x2, m);
+            r4 = r4.mul_add(x2, m);
+            r5 = r5.mul_add(x2, m);
+            r6 = r6.mul_add(x2, m);
+            r7 = r7.mul_add(x2, m);
+            r8 = r8.mul_add(x2, m);
+            r9 = r9.mul_add(x2, m);
+        }
+    }
+}
+
+fn fma_dep_chain(chain_count: usize, chain_length: usize) {
+    for _ in 0..chain_count {
+        let x2 = std::hint::black_box(0.0f64);
+        let m = std::hint::black_box(0.0f64);
+        let mut r0 = std::hint::black_box(0.0f64);
+
+        for _ in (0..chain_length).step_by(10) {
+            r0 = r0.mul_add(x2, m);
+            r0 = r0.mul_add(x2, m);
+            r0 = r0.mul_add(x2, m);
+            r0 = r0.mul_add(x2, m);
+            r0 = r0.mul_add(x2, m);
+            r0 = r0.mul_add(x2, m);
+            r0 = r0.mul_add(x2, m);
+            r0 = r0.mul_add(x2, m);
+            r0 = r0.mul_add(x2, m);
+            r0 = r0.mul_add(x2, m);
+        }
+    }
+}
+
+pub fn profile_haversines(filepath: &Path) {
+    type HaversineFunc = fn(&[f64]) -> f64;
+    let func_array: [(&str, HaversineFunc); 9] = [
+        ("Expanded Haversine ", haversine_expanded),
+        ("Expanded HaversineA", haversine_expanded_a),
+        ("Expanded HaversineB", haversine_expanded_b),
+        ("Expanded HaversineC", haversine_expanded_c),
+        ("Expanded HaversineD", haversine_expanded_d),
+        ("Expanded HaversineE", haversine_expanded_e),
+        ("Expanded HaversineF", haversine_expanded_f),
+        ("Expanded HaversineG", haversine_expanded_g),
+        ("Expanded HaversineH", haversine_expanded_h),
+    ];
+
+    let string = fs::read_to_string(filepath).unwrap();
+    let values: Vec<f64> = string
+        .split([':', ',', '}'])
+        .filter_map(|s| s.parse().ok())
+        .collect();
+
+    let profile_func = |name: &str, func: HaversineFunc| {
+        let closure_no_args = || {
+            func(&values);
+        };
+        println!("\n-------------{name}-------------");
+        repetition_test_generic(10_000_000, 1000000 * 8 * 4, closure_no_args);
+    };
+
+    for (name, pointer) in func_array {
+        profile_func(name, pointer);
+    }
+}
+
+fn haversine_expanded_h(values: &[f64]) -> f64 {
+    // This removes two branches associated with the shifted latitudes
+    let rad_per_degree = PI / 180.0;
+    let half_rad_per_degree = rad_per_degree / 2.0;
+    let half_pi = PI / 2.0;
+
+    let n = values.len();
+    let mut sum = 0.0;
+    let sum_coeff = 2.0 * EARTH_RADIUS / sqrt_ce(n as f64);
+    for chunk in values.chunks_exact(4) {
+        let half_dlat = (chunk[3] - chunk[1]) * half_rad_per_degree;
+        let half_dlon = (chunk[2] - chunk[0]) * half_rad_per_degree;
+
+        // Previously, we had the following branch:
+        // if lat<0.0: rad_per_degree else: -rad_per_degree
+        // Note that this produces the following multiplications:
+        // if lat.is_negative(): lat * rad_per_degree = negative
+        // if lat.is_positive(): -lat * rad_per_degree = negative
+        // Thus, we can just do -rad_per_degree * abs(lat)
+        // So we make the coefficient always negative
+        let shift_coeff = -rad_per_degree;
+
+        let lat1_shifted = f64::abs(chunk[1]).mul_add(shift_coeff, half_pi);
+        let lat2_shifted = f64::abs(chunk[3]).mul_add(shift_coeff, half_pi);
+
+        // We already did the range reduction, so we can use the
+        // one with no range reduction here
+        let s1 = sin_no_rr_ce(lat1_shifted);
+        let s2 = sin_no_rr_ce(lat2_shifted);
+
+        // Use abs_sine as these values will be squared anyway
+        let s0 = abs_sine_ce(half_dlat);
+        let s3 = abs_sine_ce(half_dlon);
+        let a = s0.mul_add(s0, s1 * s2 * s3 * s3);
+
+        let asin_sqrt_a = asin_sqrt_no_square_ce(a);
+
+        sum = sum_coeff.mul_add(asin_sqrt_a, sum);
+    }
+    sum
+}
+
+fn haversine_expanded_g(values: &[f64]) -> f64 {
+    // This saves redundant squaring in the arcsine computation
+    let rad_per_degree = PI / 180.0;
+    let half_rad_per_degree = rad_per_degree / 2.0;
+    let half_pi = PI / 2.0;
+
+    let n = values.len();
+    let mut sum = 0.0;
+    let sum_coeff = 2.0 * EARTH_RADIUS / sqrt_ce(n as f64);
+    for chunk in values.chunks_exact(4) {
+        let half_dlat = (chunk[3] - chunk[1]) * half_rad_per_degree;
+        let half_dlon = (chunk[2] - chunk[0]) * half_rad_per_degree;
+
+        // The condition for the range reduction is normally x>half_pi, which in
+        // this case would be for the shifted value (pi/2 larger). Since we want
+        // to roll the shift and range reduction into a single computation, the
+        // equivalent condition before the shift is lat>0.0
+        let shift_coeff1 = if chunk[1] < 0.0 {
+            rad_per_degree
+        } else {
+            -rad_per_degree
+        };
+        let shift_coeff2 = if chunk[3] < 0.0 {
+            rad_per_degree
+        } else {
+            -rad_per_degree
+        };
+
+        let lat1_shifted = chunk[1].mul_add(shift_coeff1, half_pi);
+        let lat2_shifted = chunk[3].mul_add(shift_coeff2, half_pi);
+
+        // We already did the range reduction, so we can use the
+        // one with no range reduction here
+        let s1 = sin_no_rr_ce(lat1_shifted);
+        let s2 = sin_no_rr_ce(lat2_shifted);
+
+        // Use abs_sine as these values will be squared anyway
+        let s0 = abs_sine_ce(half_dlat);
+        let s3 = abs_sine_ce(half_dlon);
+        let a = s0.mul_add(s0, s1 * s2 * s3 * s3);
+
+        let asin_sqrt_a = asin_sqrt_no_square_ce(a);
+
+        sum = sum_coeff.mul_add(asin_sqrt_a, sum);
+    }
+    sum
+}
+
+fn haversine_expanded_f(values: &[f64]) -> f64 {
+    // Note the shifted latitude computation:
+    // rad_per_degree * lat + pi/2
+    // if we need to do a range reduction, we would need to
+    // negate the above and add PI, which gives
+    // - rad_per_degree * lat - pi/2 + pi
+    // = - rad_per_degree * lat + pi/2
+    // which is just a single multiply-add
+    let rad_per_degree = PI / 180.0;
+    let half_rad_per_degree = rad_per_degree / 2.0;
+    let half_pi = PI / 2.0;
+
+    let n = values.len();
+    let mut sum = 0.0;
+    let sum_coeff = 2.0 * EARTH_RADIUS / sqrt_ce(n as f64);
+    for chunk in values.chunks_exact(4) {
+        let half_dlat = (chunk[3] - chunk[1]) * half_rad_per_degree;
+        let half_dlon = (chunk[2] - chunk[0]) * half_rad_per_degree;
+
+        // The condition for the range reduction is normally x>half_pi, which in
+        // this case would be for the shifted value (pi/2 larger). Since we want
+        // to roll the shift and range reduction into a single computation, the
+        // equivalent condition before the shift is lat>0.0
+        let shift_coeff1 = if chunk[1] < 0.0 {
+            rad_per_degree
+        } else {
+            -rad_per_degree
+        };
+        let shift_coeff2 = if chunk[3] < 0.0 {
+            rad_per_degree
+        } else {
+            -rad_per_degree
+        };
+
+        let lat1_shifted = chunk[1].mul_add(shift_coeff1, half_pi);
+        let lat2_shifted = chunk[3].mul_add(shift_coeff2, half_pi);
+
+        // We already did the range reduction, so we can use the
+        // one with no range reduction here
+        let s1 = sin_no_rr_ce(lat1_shifted);
+        let s2 = sin_no_rr_ce(lat2_shifted);
+
+        // Use abs_sine as these values will be squared anyway
+        let s0 = abs_sine_ce(half_dlat);
+        let s3 = abs_sine_ce(half_dlon);
+        let a = s0.mul_add(s0, s1 * s2 * s3 * s3);
+
+        let asin_sqrt_a = asin_sqrt_ce(a);
+
+        sum = sum_coeff.mul_add(asin_sqrt_a, sum);
+    }
+    sum
+}
+
+fn haversine_expanded_e(values: &[f64]) -> f64 {
+    // Note the shifted latitude computation:
+    // rad_per_degree * lat + pi/2
+    // if we need to do a range reduction, we would need to
+    // negate the above and add PI, which gives
+    // - rad_per_degree * lat - pi/2 + pi
+    // = - rad_per_degree * lat + pi/2
+    // which is just a single multiply-add
+    let rad_per_degree = PI / 180.0;
+    let half_rad_per_degree = rad_per_degree / 2.0;
+    let half_pi = PI / 2.0;
+
+    let n = values.len();
+    let mut sum = 0.0;
+    let sum_coeff = 2.0 * EARTH_RADIUS / sqrt_ce(n as f64);
+    for chunk in values.chunks_exact(4) {
+        let half_dlat = (chunk[3] - chunk[1]) * half_rad_per_degree;
+        let half_dlon = (chunk[2] - chunk[0]) * half_rad_per_degree;
+
+        // The condition for the range reduction is normally x>half_pi, which in
+        // this case would be for the shifted value (pi/2 larger). Since we want
+        // to roll the shift and range reduction into a single computation, the
+        // equivalent condition before the shift is lat>0.0
+        let shift_coeff1 = if chunk[1] < 0.0 {
+            rad_per_degree
+        } else {
+            -rad_per_degree
+        };
+        let shift_coeff2 = if chunk[3] < 0.0 {
+            rad_per_degree
+        } else {
+            -rad_per_degree
+        };
+
+        let lat1_shifted = chunk[1].mul_add(shift_coeff1, half_pi);
+        let lat2_shifted = chunk[3].mul_add(shift_coeff2, half_pi);
+
+        let s0 = sin_ce(half_dlat);
+        // We already did the range reduction, so we can use the
+        // one with no range reduction here
+        let s1 = sin_no_rr_ce(lat1_shifted);
+        let s2 = sin_no_rr_ce(lat2_shifted);
+        let s3 = sin_ce(half_dlon);
+        let a = s0.mul_add(s0, s1 * s2 * s3 * s3);
+
+        let asin_sqrt_a = asin_sqrt_ce(a);
+
+        sum = sum_coeff.mul_add(asin_sqrt_a, sum);
+    }
+    sum
+}
+
+fn haversine_expanded_d(values: &[f64]) -> f64 {
+    // Use function that works for only positive sine for the
+    // shifted latitudes, as they are guaranteed to be positive
+    let rad_per_degree = PI / 180.0;
+    let half_rad_per_degree = rad_per_degree / 2.0;
+    let half_pi = PI / 2.0;
+
+    let n = values.len();
+    let mut sum = 0.0;
+    let sum_coeff = 2.0 * EARTH_RADIUS / sqrt_ce(n as f64);
+    for chunk in values.chunks_exact(4) {
+        let half_dlat = (chunk[3] - chunk[1]) * half_rad_per_degree;
+        let half_dlon = (chunk[2] - chunk[0]) * half_rad_per_degree;
+
+        let lat1_shifted = chunk[1].mul_add(rad_per_degree, half_pi);
+        let lat2_shifted = chunk[3].mul_add(rad_per_degree, half_pi);
+
+        let s0 = sin_ce(half_dlat);
+        let s1 = sin_positive_ce(lat1_shifted);
+        let s2 = sin_positive_ce(lat2_shifted);
+        let s3 = sin_ce(half_dlon);
+        let a = s0.mul_add(s0, s1 * s2 * s3 * s3);
+
+        let asin_sqrt_a = asin_sqrt_ce(a);
+
+        sum = sum_coeff.mul_add(asin_sqrt_a, sum);
+    }
+    sum
+}
+
+fn haversine_expanded_c(values: &[f64]) -> f64 {
+    // Replace asin(sqrt(a)) with combined function
+    let rad_per_degree = PI / 180.0;
+    let half_rad_per_degree = rad_per_degree / 2.0;
+    let half_pi = PI / 2.0;
+
+    let n = values.len();
+    let mut sum = 0.0;
+    let sum_coeff = 2.0 * EARTH_RADIUS / sqrt_ce(n as f64);
+    for chunk in values.chunks_exact(4) {
+        let half_dlat = (chunk[3] - chunk[1]) * half_rad_per_degree;
+        let half_dlon = (chunk[2] - chunk[0]) * half_rad_per_degree;
+
+        let lat1_shifted = chunk[1].mul_add(rad_per_degree, half_pi);
+        let lat2_shifted = chunk[3].mul_add(rad_per_degree, half_pi);
+
+        let s0 = sin_ce(half_dlat);
+        let s1 = sin_ce(lat1_shifted);
+        let s2 = sin_ce(lat2_shifted);
+        let s3 = sin_ce(half_dlon);
+        let a = s0.mul_add(s0, s1 * s2 * s3 * s3);
+
+        let asin_sqrt_a = asin_sqrt_ce(a);
+
+        sum = sum_coeff.mul_add(asin_sqrt_a, sum);
+    }
+    sum
+}
+
+fn haversine_expanded_b(values: &[f64]) -> f64 {
+    // Turn latitude shift and calculation of a into fma
+    let rad_per_degree = PI / 180.0;
+    let half_rad_per_degree = rad_per_degree / 2.0;
+    let half_pi = PI / 2.0;
+
+    let n = values.len();
+    let mut sum = 0.0;
+    let sum_coeff = 2.0 * EARTH_RADIUS / sqrt_ce(n as f64);
+    for chunk in values.chunks_exact(4) {
+        let half_dlat = (chunk[3] - chunk[1]) * half_rad_per_degree;
+        let half_dlon = (chunk[2] - chunk[0]) * half_rad_per_degree;
+
+        let lat1_shifted = chunk[1].mul_add(rad_per_degree, half_pi);
+        let lat2_shifted = chunk[3].mul_add(rad_per_degree, half_pi);
+
+        let s0 = sin_ce(half_dlat);
+        let s1 = sin_ce(lat1_shifted);
+        let s2 = sin_ce(lat2_shifted);
+        let s3 = sin_ce(half_dlon);
+        let a = s0.mul_add(s0, s1 * s2 * s3 * s3);
+
+        let sqrt_a = sqrt_ce(a);
+        let asin_a = asin_ce(sqrt_a);
+
+        sum = sum_coeff.mul_add(asin_a, sum);
+    }
+    sum
+}
+
+fn haversine_expanded_a(values: &[f64]) -> f64 {
+    // The process of updating the sum can be turned into a fused
+    // multiply-add
+    let rad_per_degree = PI / 180.0;
+    let n = values.len();
+    let mut sum = 0.0;
+    let sum_coeff = 2.0 * EARTH_RADIUS / sqrt_ce(n as f64);
+    for chunk in values.chunks_exact(4) {
+        let dlat = (chunk[3] - chunk[1]) * rad_per_degree;
+        let dlon = (chunk[2] - chunk[0]) * rad_per_degree;
+
+        let lat1 = chunk[1] * rad_per_degree;
+        let lat2 = chunk[3] * rad_per_degree;
+
+        let s0 = sin_ce(dlat / 2.0);
+        let s1 = sin_ce(lat1 + PI / 2.0);
+        let s2 = sin_ce(lat2 + PI / 2.0);
+        let s3 = sin_ce(dlon / 2.0);
+        let a = s0.powi(2) + s1 * s2 * s3.powi(2);
+        let sqrt_a = sqrt_ce(a);
+        let asin_a = asin_ce(sqrt_a);
+
+        sum = sum_coeff.mul_add(asin_a, sum);
+    }
+    sum
+}
+
+fn haversine_expanded(values: &[f64]) -> f64 {
+    let rad_per_degree = PI / 180.0;
+
+    let n = values.len();
+    let mut sum = 0.0;
+    for chunk in values.chunks_exact(4) {
+        let dlat = (chunk[3] - chunk[1]) * rad_per_degree;
+        let dlon = (chunk[2] - chunk[0]) * rad_per_degree;
+
+        let lat1 = chunk[1] * rad_per_degree;
+        let lat2 = chunk[3] * rad_per_degree;
+
+        let s0 = sin_ce(dlat / 2.0);
+        let s1 = sin_ce(lat1 + PI / 2.0);
+        let s2 = sin_ce(lat2 + PI / 2.0);
+        let s3 = sin_ce(dlon / 2.0);
+        let a = s0.powi(2) + s1 * s2 * s3.powi(2);
+        let sqrt_a = sqrt_ce(a);
+        let asin_a = asin_ce(sqrt_a);
+
+        sum += 2.0 * asin_a * EARTH_RADIUS;
+    }
+    sum /= sqrt_ce(n as f64);
+    sum
+}
+
+pub fn compare_haversines(filepath: &Path) {
+    let results_reference = parse_json_and_calculate_haversine(filepath);
+    let results_test = parse_json_and_calculate_haversine_ce(filepath);
+    let n_results = results_reference.len();
+
+    let mut avg_error = 0.0;
+    let mut max_error = 0.0;
+    let mut sum_reference = 0.0;
+    let mut sum_test = 0.0;
+
+    for i in 0..n_results {
+        let result_reference = results_reference[i];
+        let result_test = results_test[i];
+        let error = (result_reference - result_test).abs();
+
+        avg_error += error;
+        sum_reference += result_reference;
+        sum_test += result_test;
+
+        if error > max_error {
+            max_error = error;
+        }
+    }
+
+    avg_error /= n_results as f64;
+    sum_reference /= f64::sqrt(n_results as f64);
+    sum_test /= sqrt_ce(n_results as f64);
+
+    println!("Average Error: {}", avg_error);
+    println!("Maximum Error: {}", max_error);
+    println!("Reference Sum: {}", sum_reference);
+    println!("Test Sum: {}", sum_test);
+}
+
+fn haversine_ce(lon1: f64, lat1: f64, lon2: f64, lat2: f64) -> f64 {
+    let dlat = (lat2 - lat1).to_radians();
+    let dlon = (lon2 - lon1).to_radians();
+
+    let lat1 = lat1.to_radians();
+    let lat2 = lat2.to_radians();
+
+    // Note: Compiling with optimizations causes the powi(2) calls to
+    // just be two multiplies, so it's fine to use it. Proof:
+    // https://godbolt.org/z/o6oad7o7e
+    let a = sin_ce(dlat / 2.0).powi(2) + cos_ce(lat1) * cos_ce(lat2) * sin_ce(dlon / 2.0).powi(2);
+
+    2.0 * asin_ce(sqrt_ce(a)) * EARTH_RADIUS
+}
+
+fn repetition_test_generic<F: Fn()>(test_time: u64, num_bytes: usize, test_func: F) {
+    let mut tester = RepetitionTest::build(
+        vec![
+            Measurement::CpuTime(CpuTime::new()),
+            Measurement::PageFaults(PageFaults::new()),
+        ],
+        num_bytes,
+    );
+
+    let mut elapsed_total = 0;
+
+    while elapsed_total < test_time {
+        let start_os_time = read_os_timer();
+        tester.start_measurements();
+        test_func();
+        let reset_timer = tester.stop_measurements();
+        let elapsed_os_time = read_os_timer() - start_os_time;
+        if reset_timer {
+            elapsed_total = 0;
+            tester.print_minimum();
+        } else {
+            elapsed_total += elapsed_os_time;
+        }
+    }
+
+    tester.print_maximum();
+    tester.print_average();
+}
 
 pub fn repetition_test_write_bytes(test_time: u64) {
     let num_bytes = 1024 * 1024;
@@ -259,7 +786,19 @@ fn read_cpu_timer() -> u64 {
     unsafe { _rdtsc() }
 }
 
-pub fn parse_json_and_calculate_haversine(filepath: &Path) -> Vec<f64> {
+fn parse_json_and_calculate_haversine_ce(filepath: &Path) -> Vec<f64> {
+    let string = fs::read_to_string(filepath).unwrap();
+    let values: Vec<f64> = string
+        .split([':', ',', '}'])
+        .filter_map(|s| s.parse().ok())
+        .collect();
+    values
+        .chunks_exact(4)
+        .map(|x| haversine_ce(x[0], x[1], x[2], x[3]))
+        .collect()
+}
+
+fn parse_json_and_calculate_haversine(filepath: &Path) -> Vec<f64> {
     let string = fs::read_to_string(filepath).unwrap();
     let values: Vec<f64> = string
         .split([':', ',', '}'])
@@ -362,7 +901,7 @@ fn sample_lon_lat_uniform(n: u32) -> (Vec<f64>, Vec<f64>) {
     (longitude, latitude)
 }
 
-fn sample_values_in_range(low: f64, high: f64, n: u32) -> Vec<f64> {
+pub fn sample_values_in_range(low: f64, high: f64, n: u32) -> Vec<f64> {
     let mut rng = rand::rng();
     let uniform = rand::distr::Uniform::new_inclusive(low, high).unwrap();
     let mut values = Vec::with_capacity(n as usize);
