@@ -869,12 +869,14 @@ impl Display for AvxPackedDoubles {
 
 impl Binary for AvxPackedDoubles {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let joined_string = self
-            .to_array()
-            .into_iter()
-            .map(|x| format!("{:b}", x.to_bits()))
-            .collect::<Vec<String>>()
-            .join(", ");
-        write!(f, "[{}]", joined_string)
+        let arr = self.to_array();
+        write!(
+            f,
+            "[{:b}, {:b}, {:b}, {:b}]",
+            arr[0].to_bits(),
+            arr[1].to_bits(),
+            arr[2].to_bits(),
+            arr[3].to_bits()
+        )
     }
 }
