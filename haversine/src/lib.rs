@@ -1,8 +1,9 @@
 pub mod assembly_tests;
 pub mod math_functions;
 use math_functions::{
-    abs_sine_ce, asin_ce, asin_sqrt_ce, asin_sqrt_no_square_ce, cos_ce, sin_ce, sin_no_rr_ce,
-    sin_positive_ce, sqrt_ce,
+    abs_sine_ce, asin_ce, asin_sqrt_ce, asin_sqrt_no_square_ce, cos_ce, simd_abs_sin,
+    simd_asin_sqrt_no_square, simd_fabs, simd_fmul, simd_fsub, simd_mul_add, simd_sin_no_rr,
+    sin_ce, sin_no_rr_ce, sin_positive_ce, sqrt_ce,
 };
 use rand::RngExt;
 use std::arch::{asm, x86_64::_rdtsc};
@@ -13,6 +14,8 @@ use std::path::Path;
 use std::sync::{LazyLock, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 use std::{fs, vec};
+
+use crate::math_functions::AvxPackedDoubles;
 
 const EARTH_RADIUS: f64 = 6372.8;
 const OS_TIMER_FREQ: u64 = 1_000_000;
@@ -123,6 +126,31 @@ fn fma_dep_chain(chain_count: usize, chain_length: usize) {
     }
 }
 
+pub fn compare_haversine_simd(filepath: &Path) {
+    let string = fs::read_to_string(filepath).unwrap();
+    let values: Vec<f64> = std::hint::black_box(
+        string
+            .split([':', ',', '}'])
+            .filter_map(|s| s.parse().ok())
+            .collect(),
+    );
+    let haversine_packed = std::hint::black_box(HaversinePacked::build_from_slice(&values));
+
+    let haversine_scalar_func = || {
+        std::hint::black_box(haversine_expanded_h(&values));
+    };
+
+    let haversine_simd_func = || {
+        std::hint::black_box(haversine_simd(&haversine_packed));
+    };
+
+    println!("\n-------------Scalar Haversine-------------");
+    repetition_test_generic(10_000_000, 1000000 * 8 * 4, haversine_scalar_func);
+
+    println!("\n-------------Simd Haversine-------------");
+    repetition_test_generic(10_000_000, 1000000 * 8 * 4, haversine_simd_func);
+}
+
 pub fn profile_haversines(filepath: &Path) {
     type HaversineFunc = fn(&[f64]) -> f64;
     let func_array: [(&str, HaversineFunc); 9] = [
@@ -156,27 +184,66 @@ pub fn profile_haversines(filepath: &Path) {
     }
 }
 
+pub fn haversine_simd(values: &HaversinePacked) -> f64 {
+    let half_rad_per_degree = AvxPackedDoubles::from(PI / 360.0);
+    let half_pi = AvxPackedDoubles::from(PI / 2.0);
+    let shift_coeff = AvxPackedDoubles::from(-PI / 180.0);
+
+    let n = values.lat1.len();
+    let mut sum = AvxPackedDoubles::from(0.0);
+    let sum_coeff = AvxPackedDoubles::from(2.0 * EARTH_RADIUS / sqrt_ce((n * 4) as f64));
+
+    for (((lon1, lat1), lon2), lat2) in values
+        .lon1
+        .iter()
+        .zip(&values.lat1)
+        .zip(&values.lon2)
+        .zip(&values.lat2)
+    {
+        let half_dlat = simd_fmul(&simd_fsub(lat2, lat1), &half_rad_per_degree);
+        let half_dlon = simd_fmul(&simd_fsub(lon2, lon1), &half_rad_per_degree);
+
+        let lat1_shifted = simd_mul_add(&simd_fabs(lat1), &shift_coeff, &half_pi);
+        let lat2_shifted = simd_mul_add(&simd_fabs(lat2), &shift_coeff, &half_pi);
+
+        let s1 = simd_sin_no_rr(&lat1_shifted);
+        let s2 = simd_sin_no_rr(&lat2_shifted);
+
+        let s0 = simd_abs_sin(&half_dlat);
+        let s3 = simd_abs_sin(&half_dlon);
+        let mul1 = simd_fmul(&s1, &s2);
+        let mul2 = simd_fmul(&s3, &s3);
+        let mul3 = simd_fmul(&mul1, &mul2);
+        let a = simd_mul_add(&s0, &s0, &mul3);
+
+        let asin_sqrt_a = simd_asin_sqrt_no_square(&a);
+
+        sum = simd_mul_add(&sum_coeff, &asin_sqrt_a, &sum);
+    }
+    sum.to_array().into_iter().sum()
+}
+
 fn haversine_expanded_h(values: &[f64]) -> f64 {
     // This removes two branches associated with the shifted latitudes
     let rad_per_degree = PI / 180.0;
     let half_rad_per_degree = rad_per_degree / 2.0;
     let half_pi = PI / 2.0;
 
+    // Previously, we had the following branch:
+    // if lat<0.0: rad_per_degree else: -rad_per_degree
+    // Note that this produces the following multiplications:
+    // if lat.is_negative(): lat * rad_per_degree = negative
+    // if lat.is_positive(): -lat * rad_per_degree = negative
+    // Thus, we can just do -rad_per_degree * abs(lat)
+    // So we make the coefficient always negative
+    let shift_coeff = -rad_per_degree;
+
     let n = values.len();
     let mut sum = 0.0;
-    let sum_coeff = 2.0 * EARTH_RADIUS / sqrt_ce(n as f64);
+    let sum_coeff = 2.0 * EARTH_RADIUS / sqrt_ce((n / 4) as f64);
     for chunk in values.chunks_exact(4) {
         let half_dlat = (chunk[3] - chunk[1]) * half_rad_per_degree;
         let half_dlon = (chunk[2] - chunk[0]) * half_rad_per_degree;
-
-        // Previously, we had the following branch:
-        // if lat<0.0: rad_per_degree else: -rad_per_degree
-        // Note that this produces the following multiplications:
-        // if lat.is_negative(): lat * rad_per_degree = negative
-        // if lat.is_positive(): -lat * rad_per_degree = negative
-        // Thus, we can just do -rad_per_degree * abs(lat)
-        // So we make the coefficient always negative
-        let shift_coeff = -rad_per_degree;
 
         let lat1_shifted = f64::abs(chunk[1]).mul_add(shift_coeff, half_pi);
         let lat2_shifted = f64::abs(chunk[3]).mul_add(shift_coeff, half_pi);
@@ -206,7 +273,7 @@ fn haversine_expanded_g(values: &[f64]) -> f64 {
 
     let n = values.len();
     let mut sum = 0.0;
-    let sum_coeff = 2.0 * EARTH_RADIUS / sqrt_ce(n as f64);
+    let sum_coeff = 2.0 * EARTH_RADIUS / sqrt_ce((n / 4) as f64);
     for chunk in values.chunks_exact(4) {
         let half_dlat = (chunk[3] - chunk[1]) * half_rad_per_degree;
         let half_dlon = (chunk[2] - chunk[0]) * half_rad_per_degree;
@@ -260,7 +327,7 @@ fn haversine_expanded_f(values: &[f64]) -> f64 {
 
     let n = values.len();
     let mut sum = 0.0;
-    let sum_coeff = 2.0 * EARTH_RADIUS / sqrt_ce(n as f64);
+    let sum_coeff = 2.0 * EARTH_RADIUS / sqrt_ce((n / 4) as f64);
     for chunk in values.chunks_exact(4) {
         let half_dlat = (chunk[3] - chunk[1]) * half_rad_per_degree;
         let half_dlon = (chunk[2] - chunk[0]) * half_rad_per_degree;
@@ -314,7 +381,7 @@ fn haversine_expanded_e(values: &[f64]) -> f64 {
 
     let n = values.len();
     let mut sum = 0.0;
-    let sum_coeff = 2.0 * EARTH_RADIUS / sqrt_ce(n as f64);
+    let sum_coeff = 2.0 * EARTH_RADIUS / sqrt_ce((n / 4) as f64);
     for chunk in values.chunks_exact(4) {
         let half_dlat = (chunk[3] - chunk[1]) * half_rad_per_degree;
         let half_dlon = (chunk[2] - chunk[0]) * half_rad_per_degree;
@@ -361,7 +428,7 @@ fn haversine_expanded_d(values: &[f64]) -> f64 {
 
     let n = values.len();
     let mut sum = 0.0;
-    let sum_coeff = 2.0 * EARTH_RADIUS / sqrt_ce(n as f64);
+    let sum_coeff = 2.0 * EARTH_RADIUS / sqrt_ce((n / 4) as f64);
     for chunk in values.chunks_exact(4) {
         let half_dlat = (chunk[3] - chunk[1]) * half_rad_per_degree;
         let half_dlon = (chunk[2] - chunk[0]) * half_rad_per_degree;
@@ -390,7 +457,7 @@ fn haversine_expanded_c(values: &[f64]) -> f64 {
 
     let n = values.len();
     let mut sum = 0.0;
-    let sum_coeff = 2.0 * EARTH_RADIUS / sqrt_ce(n as f64);
+    let sum_coeff = 2.0 * EARTH_RADIUS / sqrt_ce((n / 4) as f64);
     for chunk in values.chunks_exact(4) {
         let half_dlat = (chunk[3] - chunk[1]) * half_rad_per_degree;
         let half_dlon = (chunk[2] - chunk[0]) * half_rad_per_degree;
@@ -419,7 +486,7 @@ fn haversine_expanded_b(values: &[f64]) -> f64 {
 
     let n = values.len();
     let mut sum = 0.0;
-    let sum_coeff = 2.0 * EARTH_RADIUS / sqrt_ce(n as f64);
+    let sum_coeff = 2.0 * EARTH_RADIUS / sqrt_ce((n / 4) as f64);
     for chunk in values.chunks_exact(4) {
         let half_dlat = (chunk[3] - chunk[1]) * half_rad_per_degree;
         let half_dlon = (chunk[2] - chunk[0]) * half_rad_per_degree;
@@ -447,7 +514,7 @@ fn haversine_expanded_a(values: &[f64]) -> f64 {
     let rad_per_degree = PI / 180.0;
     let n = values.len();
     let mut sum = 0.0;
-    let sum_coeff = 2.0 * EARTH_RADIUS / sqrt_ce(n as f64);
+    let sum_coeff = 2.0 * EARTH_RADIUS / sqrt_ce((n / 4) as f64);
     for chunk in values.chunks_exact(4) {
         let dlat = (chunk[3] - chunk[1]) * rad_per_degree;
         let dlon = (chunk[2] - chunk[0]) * rad_per_degree;
@@ -490,7 +557,7 @@ fn haversine_expanded(values: &[f64]) -> f64 {
 
         sum += 2.0 * asin_a * EARTH_RADIUS;
     }
-    sum /= sqrt_ce(n as f64);
+    sum /= sqrt_ce((n / 4) as f64);
     sum
 }
 
@@ -971,6 +1038,36 @@ fn ioctl(fd: i32, code: usize, pointer: usize) {
     }
 
     assert!(return_code >= 0);
+}
+
+pub struct HaversinePacked {
+    lon1: Vec<AvxPackedDoubles>,
+    lat1: Vec<AvxPackedDoubles>,
+    lon2: Vec<AvxPackedDoubles>,
+    lat2: Vec<AvxPackedDoubles>,
+}
+
+impl HaversinePacked {
+    pub fn build_from_slice(slice: &[f64]) -> Self {
+        let n = slice.len() / 16;
+        let mut lon1: Vec<AvxPackedDoubles> = Vec::with_capacity(n);
+        let mut lat1: Vec<AvxPackedDoubles> = Vec::with_capacity(n);
+        let mut lon2: Vec<AvxPackedDoubles> = Vec::with_capacity(n);
+        let mut lat2: Vec<AvxPackedDoubles> = Vec::with_capacity(n);
+        for chunk in slice.chunks_exact(16) {
+            lon1.push([chunk[0], chunk[4], chunk[8], chunk[12]].into());
+            lat1.push([chunk[1], chunk[5], chunk[9], chunk[13]].into());
+            lon2.push([chunk[2], chunk[6], chunk[10], chunk[14]].into());
+            lat2.push([chunk[3], chunk[7], chunk[11], chunk[15]].into());
+        }
+
+        Self {
+            lon1,
+            lon2,
+            lat1,
+            lat2,
+        }
+    }
 }
 
 struct RepetitionTest {

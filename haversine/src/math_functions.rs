@@ -1,8 +1,12 @@
 use core::arch::x86_64::{
     __m256d, _CMP_GT_OS, _mm_cvtsd_f64, _mm_fmadd_sd, _mm_fmsub_sd, _mm_mul_sd, _mm_set_sd,
-    _mm_sqrt_sd, _mm256_andnot_pd, _mm256_cmp_pd, _mm256_set_pd, _mm256_set1_pd, _mm256_store_pd,
+    _mm_sqrt_sd, _mm256_andnot_pd, _mm256_blendv_pd, _mm256_cmp_pd, _mm256_fmadd_pd, _mm256_mul_pd,
+    _mm256_set_pd, _mm256_set1_pd, _mm256_sqrt_pd, _mm256_store_pd, _mm256_sub_pd,
 };
-use std::{f64::consts::PI, fmt::Binary, fmt::Display};
+use std::{
+    f64::consts::PI,
+    fmt::{Binary, Display},
+};
 
 static SINE_TAYLOR_COEFFS: [f64; 16] = [
     1.0,
@@ -532,8 +536,94 @@ pub fn benchmark_math_functions() {
     }
 }
 
-pub fn simd_gt_mask(v1: &AvxPackedDoubles, v2: &AvxPackedDoubles) -> AvxPackedDoubles {
-    unsafe { _mm256_cmp_pd::<_CMP_GT_OS>(v1.into(), v2.into()).into() }
+pub fn simd_asin_sqrt_no_square(x: &AvxPackedDoubles) -> AvxPackedDoubles {
+    let one_half = AvxPackedDoubles::from(0.5);
+    let one = AvxPackedDoubles::from(1.0);
+    let pi_half = AvxPackedDoubles::from(PI * 0.5);
+    let x_mask = simd_cmp_mask::<_CMP_GT_OS>(x, &one_half);
+    let x_sub = simd_fsub(&one, x);
+    let x_shifted = simd_select_from_mask(&x_sub, x, &x_mask);
+    let result = simd_approx_from_coeff_table_no_square(
+        &simd_sqrt(&x_shifted),
+        &x_shifted,
+        ARCSINE_MINIMAX_COEFFS[16],
+    );
+    let result_sub = simd_fsub(&pi_half, &result);
+    simd_select_from_mask(&result_sub, &result, &x_mask)
+}
+
+pub fn simd_abs_sin(x: &AvxPackedDoubles) -> AvxPackedDoubles {
+    let half_pi = AvxPackedDoubles::from(PI / 2.0);
+    let pi = AvxPackedDoubles::from(PI);
+    let abs_x = simd_fabs(x);
+    let abs_x_shifted = simd_fsub(&pi, &abs_x);
+    let mask = simd_cmp_mask::<_CMP_GT_OS>(&abs_x, &half_pi);
+    let x_shifted = simd_select_from_mask(&abs_x_shifted, &abs_x, &mask);
+    simd_sin_no_rr(&x_shifted)
+}
+
+pub fn simd_sin_no_rr(x: &AvxPackedDoubles) -> AvxPackedDoubles {
+    simd_approx_from_coeff_table(x, SINE_MINIMAX_COEFFS[9])
+}
+
+fn simd_approx_from_coeff_table_no_square(
+    x: &AvxPackedDoubles,
+    x2: &AvxPackedDoubles,
+    coeffs: &[f64],
+) -> AvxPackedDoubles {
+    let n = coeffs.len();
+    let mut result = AvxPackedDoubles::from(coeffs[n - 1]);
+    for i in (0..(n - 1)).rev() {
+        let coeff = AvxPackedDoubles::from(coeffs[i]);
+        result = simd_mul_add(x2, &result, &coeff);
+    }
+    simd_fmul(&result, x)
+}
+
+fn simd_approx_from_coeff_table(x: &AvxPackedDoubles, coeffs: &[f64]) -> AvxPackedDoubles {
+    let n = coeffs.len();
+    let x2 = simd_fmul(x, x);
+    let mut result = AvxPackedDoubles::from(coeffs[n - 1]);
+    for i in (0..(n - 1)).rev() {
+        result = simd_mul_add(&x2, &result, &AvxPackedDoubles::from(coeffs[i]));
+    }
+    simd_fmul(&result, x)
+}
+
+pub fn simd_sqrt(x: &AvxPackedDoubles) -> AvxPackedDoubles {
+    unsafe { _mm256_sqrt_pd(x.into()).into() }
+}
+
+pub fn simd_fsub(v1: &AvxPackedDoubles, v2: &AvxPackedDoubles) -> AvxPackedDoubles {
+    unsafe { _mm256_sub_pd(v1.into(), v2.into()).into() }
+}
+
+pub fn simd_fmul(v1: &AvxPackedDoubles, v2: &AvxPackedDoubles) -> AvxPackedDoubles {
+    unsafe { _mm256_mul_pd(v1.into(), v2.into()).into() }
+}
+
+pub fn simd_mul_add(
+    v1: &AvxPackedDoubles,
+    v2: &AvxPackedDoubles,
+    v3: &AvxPackedDoubles,
+) -> AvxPackedDoubles {
+    unsafe { _mm256_fmadd_pd(v1.into(), v2.into(), v3.into()).into() }
+}
+
+// Select values from v1 where mask is all ones and from v2 where it's all zeros
+fn simd_select_from_mask(
+    v1: &AvxPackedDoubles,
+    v2: &AvxPackedDoubles,
+    mask: &AvxPackedDoubles,
+) -> AvxPackedDoubles {
+    unsafe { _mm256_blendv_pd(v2.into(), v1.into(), mask.into()).into() }
+}
+
+fn simd_cmp_mask<const CMP: i32>(
+    v1: &AvxPackedDoubles,
+    v2: &AvxPackedDoubles,
+) -> AvxPackedDoubles {
+    unsafe { _mm256_cmp_pd::<CMP>(v1.into(), v2.into()).into() }
 }
 
 pub fn simd_fabs(values: &AvxPackedDoubles) -> AvxPackedDoubles {
@@ -822,11 +912,11 @@ impl From<&AvxPackedDoubles> for __m256d {
 pub struct AvxPackedDoubles(__m256d);
 
 impl AvxPackedDoubles {
-    fn new() -> Self {
+    pub fn new() -> Self {
         Self::from(0.0)
     }
 
-    fn to_array(&self) -> [f64; 4] {
+    pub fn to_array(&self) -> [f64; 4] {
         let mut array = [0.0; 4];
         unsafe {
             _mm256_store_pd(array.as_mut_ptr(), self.0);
