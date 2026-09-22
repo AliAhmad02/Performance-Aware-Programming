@@ -672,6 +672,64 @@ pub fn repetition_test_write_bytes(test_time: u64) {
     tester.print_average();
 }
 
+// This function tests committing all the memory upfront vs page fault
+// on read. We see some pretty odd results here. If we turn off transparent
+// hugepages, MAP_POPULATE is a bit faster, as we might expect, since we
+// don't suffer any pagefaults. However, if it is on, then actually not
+// populating the pages is significantly faster, which is totally unexpected.
+// Looking at the pagefault numbers, we are also clearly benefitting from
+// THP. Thus, it may be that when we ask for all the memory to be mapped upfront,
+// we don't trigger the heuristic for getting hugepages, whereas the process of
+// filling the array does. Thus, the speed difference is likely down to the fact
+// that mapping all the 4k pages upfront costs more than pagefaulting every 2M.
+// Results do change somewhat as length is changed, take it with a grain of salt.
+pub fn test_mmap() {
+    // Using hugepages is a flag here, but we don't do it because it gives
+    // an error. This is because we can't just request hugepages trivially,
+    // the transparent hugepages feature allows the kernel to automatically
+    // give us some hugepages sometimes, but if we want to have persistent
+    // hugepages that are always free to be allocated then we have to do
+    // some special things
+    const MAP_PRIVATE: usize = 0x02;
+    const MAP_ANONYMOUS: usize = 0x20;
+    const MAP_POPULATE: usize = 0x008000;
+    const PROT: usize = 0x03;
+    let length = 1024 * 4096;
+    let fd = -1;
+    let offset = 0;
+
+    let write_bytes_nopop = || {
+        let memory_map = mmap::<u8>(0, length, PROT, MAP_PRIVATE | MAP_ANONYMOUS, fd, offset);
+        for i in 0..length {
+            unsafe {
+                *memory_map.pointer.add(i) = i as u8;
+            }
+        }
+    };
+
+    let write_bytes_pop = || {
+        let memory_map = mmap::<u8>(
+            0,
+            length,
+            PROT,
+            MAP_PRIVATE | MAP_ANONYMOUS | MAP_POPULATE,
+            fd,
+            offset,
+        );
+        for i in 0..length {
+            unsafe {
+                *memory_map.pointer.add(i) = i as u8;
+            }
+        }
+    };
+
+    println!("\n---------------------mmap (no pre-mapping)---------------------");
+    repetition_test_generic(10_000_000, length, write_bytes_nopop);
+
+    println!("\n---------------------mmap (with pre-mapping)---------------------");
+    repetition_test_generic(10_000_000, length, write_bytes_pop);
+}
+
 /*
 The page fault numbers were not making sense (I was not getting
 4kB per page fault. Turns out this is because of an optimization
@@ -979,6 +1037,62 @@ pub fn sample_values_in_range(low: f64, high: f64, n: u32) -> Vec<f64> {
     values
 }
 
+fn mmap<T>(
+    address: usize,
+    length: usize,
+    prot: usize,
+    flags: usize,
+    fd: i32,
+    offset: usize,
+) -> MemoryMap<T> {
+    const SYSCALL_MMAP: usize = 9;
+    let pointer: *mut T;
+
+    unsafe {
+        asm!(
+                "syscall",
+                in("rax") SYSCALL_MMAP,
+                in("rdi") address,
+                in("rsi") length,
+                in("rdx") prot,
+                in("r10") flags,
+                in("r8") fd,
+                in("r9") offset,
+                // syscall clobbers rcx and r11
+                out("rcx") _,
+                out("r11") _,
+                lateout("rax") pointer,
+        )
+    }
+
+    assert!(pointer as i64 >= 0);
+
+    MemoryMap {
+        pointer,
+        file_descriptor: fd,
+        length,
+    }
+}
+
+fn munmap<T>(pointer: *mut T, length: usize) {
+    const SYSCALL_MUNMAP: usize = 11;
+    let return_code: i32;
+    unsafe {
+        asm!(
+                "syscall",
+                in("rax") SYSCALL_MUNMAP,
+                in("rdi") pointer,
+                in("rsi") length,
+                // syscall clobbers rcx and r11
+                out("rcx") _,
+                out("r11") _,
+                lateout("rax") return_code,
+        )
+    }
+
+    assert!(return_code >= 0);
+}
+
 fn close(fd: i32) {
     const SYSCALL_CLOSE: usize = 3;
     let return_code: i32;
@@ -995,7 +1109,8 @@ fn close(fd: i32) {
         )
     }
 
-    assert!(return_code >= 0);
+    // Second condition allows for closing an invalid file descriptor
+    assert!(return_code >= 0 || return_code == -9);
 }
 
 fn read(fd: i32, pointer: &mut u64, size: usize) {
@@ -1284,6 +1399,19 @@ impl CpuTime {
 
     fn stop_measurement(&mut self) {
         self.end = read_cpu_timer();
+    }
+}
+
+struct MemoryMap<T> {
+    pointer: *mut T,
+    file_descriptor: i32,
+    length: usize,
+}
+
+impl<T> Drop for MemoryMap<T> {
+    fn drop(&mut self) {
+        close(self.file_descriptor);
+        munmap(self.pointer, self.length);
     }
 }
 
